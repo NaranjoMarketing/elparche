@@ -1,0 +1,2168 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>El Parche de Alcatraz - Control de Comandas, Inventario & Caja</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2 family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Volkhov:ital,wght=0,400;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        alcatraz: {
+                          carbon: '#0F172A', // Slate oscuro de seguridad
+                          acero: '#334155',  // Gris acero industrial
+                          glowing: '#F59E0B', // Ámbar brillante de advertencia
+                          crimson: '#E11D48', // Rojo de alerta
+                          crema: '#F8FAFC',  // Fondo de paneles limpio
+                          metal: '#64748B'
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+                        serif: ['"Volkhov"', 'serif']
+                    }
+                }
+            }
+        }
+
+        // --- CONEXIÓN DE API CON EL NUEVO BACKEND DE GOOGLE SHEETS ---
+        const URL_API = 'https://script.google.com/macros/s/AKfycbzm6wPvN_y5UNrzDRsTPpd8mm9IRP-E_tCGwKH4LTWJ71FgW15g-HkhTNSx3G6K7lJAyA/exec';
+
+        async function sincronizarConGoogle(action, payload) {
+            try {
+                await fetch(URL_API, {
+                    method: 'POST',
+                    mode: 'no-cors',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        action: action,
+                        data: payload,
+                        timestamp: new Date().toLocaleString()
+                    })
+                });
+                console.log("Sincronización con Alcatraz exitosa en la nube.");
+            } catch (error) {
+                console.error("Error al sincronizar con Google Sheets:", error);
+            }
+        }
+    </script>
+    <style>
+        body { background-color: #0B0F19; font-family: 'Plus Jakarta Sans', sans-serif; }
+        .scrolling-categories { display: flex; overflow-x: auto; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; }
+        .scrolling-categories::-webkit-scrollbar { display: none; }
+        
+        @keyframes pulse-amber {
+            0%, 100% { background-color: #D97706; box-shadow: 0 0 0 0 rgba(217, 119, 6, 0.7); }
+            50% { background-color: #F59E0B; box-shadow: 0 0 0 10px rgba(217, 119, 6, 0); }
+        }
+        .pulse-ready {
+            animation: pulse-amber 2s infinite;
+            color: white !important;
+        }
+
+        @media print {
+            @page { margin: 0; }
+            body.printing-mode * { visibility: hidden; }
+            body.printing-mode #print-receipt-area, body.printing-mode #print-receipt-area * { visibility: visible; }
+            body.printing-mode { background-color: white !important; }
+            body.printing-mode #print-receipt-area {
+                position: absolute; left: 0; top: 0; width: 100%; max-width: 80mm; 
+                background: white; color: black; font-size: 12px; line-height: 1.2;
+                padding: 10px; margin: 0; font-family: monospace; display: block !important;
+            }
+            body.printing-mode header, body.printing-mode footer, body.printing-mode nav, body.printing-mode main, body.printing-mode #toast-container { display: none !important; }
+        }
+    </style>
+</head>
+<body class="text-slate-100 min-h-screen flex flex-col">
+
+    <!-- ÁREA DE IMPRESIÓN EXCLUSIVA TÉRMICA -->
+    <div id="print-receipt-area" class="hidden"></div>
+
+    <!-- CONTENEDOR FLOTANTE PARA TOAST ALERTS (EVITA CONGELACIÓN POR ALERT POPUPS) -->
+    <div id="toast-container" class="fixed top-5 left-1/2 transform -translate-x-1/2 z-[100] flex flex-col gap-2 pointer-events-none w-[90%] max-w-md text-center"></div>
+
+    <header class="bg-alcatraz-carbon text-white sticky top-0 z-50 shadow-xl border-b border-alcatraz-acero">
+        <div class="max-w-7xl mx-auto px-4 py-3 flex flex-col md:flex-row justify-between items-center gap-3">
+            
+            <div class="flex items-center gap-3 cursor-pointer group" onclick="switchView('home')" title="Volver al Inicio">
+                <div class="bg-alcatraz-glowing p-2 rounded-xl shadow-inner text-alcatraz-carbon group-hover:scale-105 transition-transform duration-300">
+                    <i class="fa-solid fa-bars-progress text-xl"></i>
+                </div>
+                <div class="flex flex-col">
+                    <span class="font-serif font-bold text-lg md:text-xl tracking-wide">EL PARCHE <span class="text-alcatraz-glowing font-sans font-black">ALCATRAZ</span></span>
+                    <span class="text-[8px] text-slate-400 tracking-widest uppercase">Bar, Inventario y Comandas</span>
+                </div>
+            </div>
+
+            <!-- MENU RESTRINGIDO: SOLO APARECE SI EL PERSONAL SE LOGUEÓ -->
+            <div id="role-selector-container" class="hidden flex flex-wrap justify-center bg-slate-950 p-1.5 rounded-2xl border border-slate-800 gap-1">
+                <button onclick="switchView('mesero')" id="btn-view-mesero" class="nav-role-btn px-4 py-2 rounded-xl text-xs font-black bg-alcatraz-glowing text-alcatraz-carbon">
+                    <i class="fa-solid fa-tablet-screen-button"></i> Tomar Pedidos (Mesero)
+                </button>
+                <button onclick="switchView('cocina')" id="btn-view-cocina" class="nav-role-btn px-4 py-2 rounded-xl text-xs font-black text-slate-400 transition-all hover:text-white relative">
+                    <i class="fa-solid fa-beer-mug-empty text-cyan-400"></i> Barra Despacho
+                    <span id="kitchen-badge" class="absolute -top-1 -right-1 bg-alcatraz-crimson text-white text-[9px] px-1.5 py-0.5 rounded-full hidden">0</span>
+                </button>
+                <button onclick="switchView('pos-login')" id="btn-view-admin" class="nav-role-btn px-4 py-2 rounded-xl text-xs font-black text-slate-400 transition-all hover:text-white">
+                    <i class="fa-solid fa-cash-register text-emerald-400"></i> Caja POS / Crédito
+                </button>
+                <!-- BOTÓN PARA BLOQUEAR SISTEMA DE INMEDIATO -->
+                <button onclick="lockSystem()" class="bg-alcatraz-crimson text-white hover:bg-opacity-90 px-3 py-2 rounded-xl text-xs font-bold transition-all ml-2" title="Bloquear y Cerrar Sesión de Personal">
+                    <i class="fa-solid fa-lock"></i>
+                </button>
+            </div>
+            
+            <div id="staff-auth-trigger" class="flex">
+                <button onclick="switchView('staff-login')" class="bg-slate-800 border border-slate-700 text-alcatraz-glowing font-black text-xs px-4 py-2 rounded-xl hover:bg-slate-700 transition-all shadow-md">
+                    <i class="fa-solid fa-user-shield mr-1"></i> Acceso Personal
+                </button>
+            </div>
+        </div>
+    </header>
+
+    <!-- VISTA PÚBLICA / LANDING HOME -->
+    <main id="view-home" class="flex-grow max-w-7xl mx-auto w-full p-4 md:p-6 transition-all">
+        <!-- HERO CENTRAL DEL BAR -->
+        <div class="relative bg-slate-900 text-white rounded-3xl overflow-hidden shadow-2xl mb-8 border border-slate-800">
+            <div class="grid grid-cols-1 md:grid-cols-12 items-stretch">
+                <div class="p-8 md:p-12 md:col-span-7 flex flex-col justify-center relative z-10 bg-slate-900/90 backdrop-blur-sm">
+                    <span class="bg-alcatraz-glowing/20 text-alcatraz-glowing font-bold text-xs px-3 py-1.5 rounded-full uppercase tracking-widest inline-block mb-3 w-max border border-alcatraz-glowing/30">Pabellón de Licores & Buen Ambiente</span>
+                    <h1 class="font-serif text-3xl md:text-5xl font-bold leading-tight mb-4">La Mejor Sentencia en Inírida es una Fría</h1>
+                    <p class="text-slate-300 text-sm md:text-base mb-6 font-light">Disfruta de la mejor selección de licores nacionales, cervezas heladas de la casa y un ambiente rústico inigualable en el corazón del Guainía. El refugio perfecto de la rutina diaria.</p>
+                    <div class="flex flex-wrap gap-3">
+                        <span class="inline-flex items-center gap-2 bg-alcatraz-glowing text-alcatraz-carbon px-5 py-3 rounded-full text-xs sm:text-sm font-bold shadow-lg">
+                            <i class="fa-solid fa-clock"></i> Abiertos desde las 4:00 PM hasta el Amanecer
+                        </span>
+                    </div>
+                </div>
+                <div class="h-64 md:h-auto md:col-span-5 relative min-h-[300px]">
+                    <img src="https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?q=80&w=800&auto=format&fit=crop" alt="El Parche de Alcatraz" class="absolute inset-0 w-full h-full object-cover">
+                    <div class="absolute inset-0 bg-gradient-to-t md:bg-gradient-to-r from-slate-900 via-transparent to-transparent"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- BANNERS DE PROMOCIÓN DE LA SEMANA -->
+        <h2 class="font-serif text-2xl font-bold mb-6 text-white flex items-center gap-2">
+            <i class="fa-solid fa-fire text-alcatraz-glowing animate-bounce"></i> Promociones de Pabellón
+        </h2>
+        
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+            <!-- BANNER 1 -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-md flex flex-col justify-between">
+                <div class="h-40 overflow-hidden relative">
+                    <img src="https://images.unsplash.com/photo-1527061011665-3652c757a4d4?q=80&w=600&auto=format&fit=crop" class="w-full h-full object-cover">
+                    <div class="absolute top-3 left-3 bg-alcatraz-glowing text-alcatraz-carbon font-black text-[10px] px-2.5 py-1 rounded">MIÉRCOLES</div>
+                </div>
+                <div class="p-5">
+                    <h3 class="font-bold text-lg text-white mb-1.5">Fiebre de Amarillo 💛</h3>
+                    <p class="text-xs text-slate-400 font-light leading-relaxed">Media de Aguardiente Amarillo de Manzanares helado con cubeta de hielo de obsequio para tu mesa.</p>
+                </div>
+            </div>
+            <!-- BANNER 2 -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-md flex flex-col justify-between">
+                <div class="h-40 overflow-hidden relative">
+                    <img src="https://images.unsplash.com/photo-1608270586620-248524c67de9?q=80&w=600&auto=format&fit=crop" class="w-full h-full object-cover">
+                    <div class="absolute top-3 left-3 bg-alcatraz-glowing text-alcatraz-carbon font-black text-[10px] px-2.5 py-1 rounded">VIERNES</div>
+                </div>
+                <div class="p-5">
+                    <h3 class="font-bold text-lg text-white mb-1.5">Cubetazo de Coronitas 🍺</h3>
+                    <p class="text-xs text-slate-400 font-light leading-relaxed">Pide 5 Coronitas bien frías y la sexta corre por cuenta del Alcaide. El mejor plan para iniciar el fin de semana.</p>
+                </div>
+            </div>
+            <!-- BANNER 3 -->
+            <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-md flex flex-col justify-between">
+                <div class="h-40 overflow-hidden relative">
+                    <img src="https://images.unsplash.com/photo-1548839140-29a749e1cf4d?q=80&w=600&auto=format&fit=crop" class="w-full h-full object-cover">
+                    <div class="absolute top-3 left-3 bg-alcatraz-glowing text-alcatraz-carbon font-black text-[10px] px-2.5 py-1 rounded">TODOS LOS DÍAS</div>
+                </div>
+                <div class="p-5">
+                    <h3 class="font-bold text-lg text-white mb-1.5">Hidratación de Seguridad 💧</h3>
+                    <p class="text-xs text-slate-400 font-light leading-relaxed">Por la compra de cualquier botella de Antioqueño o Amarillo, te entregamos una botella de agua mineral helada.</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- SECCIÓN: UBICACIÓN Y HORARIO -->
+        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 md:p-8 flex flex-col md:flex-row items-center justify-between gap-6 shadow-lg mb-12">
+            <div class="flex items-center gap-4">
+                <div class="bg-slate-950 p-4 rounded-full text-alcatraz-glowing text-2xl shadow-inner border border-slate-800"><i class="fa-solid fa-map-location-dot"></i></div>
+                <div>
+                    <h3 class="font-serif text-lg font-bold text-white">¿Dónde nos encontramos ubicados?</h3>
+                    <p class="text-xs text-slate-400 font-light mt-1">Inírida, Guainía - Colombia. Frente al Parque Principal.</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <span class="w-3.5 h-3.5 rounded-full bg-emerald-500 animate-ping"></span>
+                <p class="text-xs font-bold text-emerald-400 uppercase tracking-widest bg-emerald-950/20 px-4 py-2 rounded-full border border-emerald-900/30">Abierto Ahora</p>
+            </div>
+        </div>
+    </main>
+
+    <!-- VISTA: LOGIN DE PERSONAL (MESEROS / BARMAN) -->
+    <main id="view-staff-login" class="hidden flex-grow flex items-center justify-center p-4">
+        <div class="bg-slate-900 max-w-sm w-full p-8 rounded-3xl shadow-2xl border border-slate-800">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-slate-950 text-alcatraz-glowing rounded-full flex items-center justify-center text-2xl mx-auto mb-3 border border-slate-800"><i class="fa-solid fa-user-lock"></i></div>
+                <h2 class="text-xl font-bold text-white font-serif">Autenticación de Turno</h2>
+                <p class="text-xs text-slate-400 mt-1">Acceso restringido para personal autorizado del bar.</p>
+            </div>
+            <div class="space-y-4 text-xs">
+                <div>
+                    <label class="block font-bold uppercase mb-1 text-slate-300">Usuario Personal</label>
+                    <input type="text" id="staff-login-user" placeholder="Mesero / Barman" class="w-full bg-slate-950 border border-slate-800 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-alcatraz-glowing font-bold">
+                </div>
+                <div>
+                    <label class="block font-bold uppercase mb-1 text-slate-300">Contraseña</label>
+                    <input type="password" id="staff-login-pass" placeholder="••••" class="w-full bg-slate-950 border border-slate-800 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-1 focus:ring-alcatraz-glowing font-bold">
+                </div>
+                <div id="staff-login-error" class="hidden text-alcatraz-crimson text-center font-bold">Credenciales de personal incorrectas.</div>
+                <button onclick="attemptStaffLogin()" class="w-full bg-alcatraz-glowing text-alcatraz-carbon py-3 rounded-xl font-black shadow-lg hover:bg-opacity-95 transition-all text-sm uppercase">
+                    Ingresar al Pabellón
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- VISTA 1: INTERFAZ DE MESERO PARA CONTROL DE CELDAS Y COMANDAS -->
+    <main id="view-mesero" class="hidden flex-grow max-w-7xl mx-auto w-full p-4 md:p-6">
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+            
+            <!-- PANEL IZQUIERDO: SELECCIÓN DE LAS CELDAS COMPACTO -->
+            <div class="lg:col-span-5 bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-sm flex flex-col gap-4">
+                <div class="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                    <label class="block text-xs font-black uppercase text-alcatraz-glowing mb-1.5"><i class="fa-solid fa-id-card"></i> Identificación de Mesera/o</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="waiter-name-input" placeholder="Nombre de Turno" class="flex-grow bg-slate-900 border border-slate-700 text-xs font-bold rounded-lg px-3 py-2.5 text-white focus:outline-none focus:ring-1 focus:ring-alcatraz-glowing">
+                        <button onclick="registerWaiter()" class="bg-alcatraz-glowing text-alcatraz-carbon text-xs px-4 py-2.5 rounded-lg font-black shrink-0">Fijar</button>
+                    </div>
+                    <p class="text-[10px] text-slate-400 font-bold mt-1.5" id="active-waiter-label">Mesero asignado: <span class="text-alcatraz-crimson">Sin Registrar</span></p>
+                </div>
+
+                <div>
+                    <div class="flex justify-between items-center mb-3">
+                        <h3 class="font-serif text-lg font-bold text-alcatraz-glowing"><i class="fa-solid fa-chair mr-1"></i> Pabellones de Consumo</h3>
+                        <span class="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded-full font-bold">30 Celdas + Directa</span>
+                    </div>
+                    
+                    <!-- LISTADO HORIZONTAL COMPACTO EN LUGAR DE GRID PESADO -->
+                    <div class="flex flex-col gap-1.5 max-h-[400px] overflow-y-auto pr-1" id="mesas-grid-container"></div>
+                </div>
+            </div>
+
+            <!-- PANEL DERECHO: CONSTRUCCIÓN Y DETALLE DE RONDAS INDIVIDUALES -->
+            <div class="lg:col-span-7 flex flex-col gap-4">
+                <div id="mesero-order-panel" class="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-sm flex-grow flex flex-col">
+                    
+                    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-800">
+                        <div>
+                            <span class="text-[10px] uppercase tracking-widest text-alcatraz-glowing font-bold">Celda / Cliente de Turno</span>
+                            <h3 id="mesero-selected-table-title" class="text-2xl font-bold text-white font-serif">Pabellón Libre</h3>
+                        </div>
+                        
+                        <div class="flex items-center gap-2" id="mesero-rename-box">
+                            <input type="text" id="mesero-table-alias" placeholder="Renombrar por Nombre de Cliente" class="bg-slate-950 border border-slate-700 text-xs font-bold rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-1 focus:ring-alcatraz-glowing w-48">
+                            <button onclick="applyTableAlias()" class="bg-alcatraz-glowing text-alcatraz-carbon text-xs px-3 py-2 rounded-lg font-black hover:bg-opacity-90 font-bold">Cambiar</button>
+                        </div>
+                    </div>
+
+                    <div class="py-4 flex-grow flex flex-col">
+                        <h4 class="text-xs uppercase tracking-wider text-slate-400 font-bold mb-2">Seleccionar Bebidas y Productos</h4>
+                        
+                        <!-- FILTROS DE CATEGORÍA DEL MENÚ DEL BAR -->
+                        <div class="flex gap-1.5 mb-3 scrolling-categories pb-1" id="mesero-category-filters"></div>
+                        
+                        <div class="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[200px] overflow-y-auto pr-1 mb-4" id="mesero-menu-grid"></div>
+
+                        <!-- LÍNEA TEMPORAL DE RONDAS INDIVIDUALES -->
+                        <h4 class="text-xs uppercase tracking-wider text-slate-400 font-bold border-t border-slate-800 pt-3 mb-2 flex justify-between">
+                            <span>Historial de Rondas Pedidas</span>
+                            <span id="mesero-table-total" class="text-alcatraz-glowing font-extrabold text-sm">$0</span>
+                        </h4>
+                        
+                        <div id="mesero-cart-items" class="space-y-3 max-h-[250px] overflow-y-auto pr-1 flex-grow">
+                            <p class="text-center text-xs text-slate-500 py-8">Selecciona un pabellón para construir e individualizar comandas.</p>
+                        </div>
+                    </div>
+
+                    <!-- CONTROLADORES DE RONDA EN COLA -->
+                    <div class="border-t border-slate-800 pt-4 flex flex-col sm:flex-row gap-2">
+                        <div class="flex-grow bg-slate-950 p-2.5 rounded-xl border border-slate-800 flex items-center justify-between">
+                            <span class="text-xs font-black text-slate-400">Total de esta Ronda:</span>
+                            <span id="current-round-total" class="text-alcatraz-glowing font-black text-sm">$0</span>
+                        </div>
+                        <button onclick="dispatchWaiterOrder()" class="bg-alcatraz-glowing hover:bg-opacity-95 text-alcatraz-carbon px-6 py-3 rounded-xl font-black text-xs flex items-center justify-center gap-1.5">
+                            <i class="fa-solid fa-paper-plane"></i> Despachar Ronda
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- VISTA 2: MONITOR DE BARMAN (DESPACHO DE RONDAS) -->
+    <main id="view-cocina" class="hidden flex-grow max-w-7xl mx-auto w-full p-4 md:p-6">
+        <div class="flex justify-between items-center mb-6 pb-2 border-b border-slate-800">
+            <div>
+                <h2 class="text-2xl md:text-3xl font-bold text-white flex items-center gap-2 font-serif">
+                    <i class="fa-solid fa-beer-mug-empty text-cyan-400 animate-pulse"></i> Cola de Despacho de Bebidas
+                </h2>
+                <p class="text-xs text-slate-400">Rondas entrantes listas para servir en barra.</p>
+            </div>
+            <div class="flex items-center gap-2">
+                <span class="w-3 h-3 rounded-full bg-cyan-400 block animate-ping"></span>
+                <span class="text-xs text-slate-300 font-bold">Barra Conectada</span>
+            </div>
+        </div>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6" id="kitchen-orders-container"></div>
+    </main>
+
+    <!-- VISTA 3: ACCESO ADMINISTRATIVO (PIN DE SEGURIDAD) -->
+    <main id="view-pos-login" class="hidden flex-grow flex items-center justify-center p-4">
+        <div class="bg-slate-900 max-w-md w-full p-8 rounded-2xl shadow-2xl border border-slate-800">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-slate-950 text-alcatraz-glowing rounded-full flex items-center justify-center text-2xl mx-auto mb-4 shadow-md"><i class="fa-solid fa-lock"></i></div>
+                <h2 class="text-2xl font-bold text-white font-serif">Pabellón Administrativo</h2>
+                <p class="text-sm text-slate-400">Introduce la llave de acceso para abrir caja.</p>
+            </div>
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-xs font-bold uppercase mb-1 text-slate-300">Usuario de Caja</label>
+                    <input type="text" id="login-user" value="Admin" class="w-full bg-slate-950 border border-slate-800 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-alcatraz-glowing text-sm">
+                </div>
+                <div>
+                    <label class="block text-xs font-bold uppercase mb-1 text-slate-300">Contraseña / PIN</label>
+                    <input type="password" id="login-pass" placeholder="••••" class="w-full bg-slate-950 border border-slate-800 px-4 py-3 rounded-xl text-white focus:outline-none focus:ring-2 focus:ring-alcatraz-glowing text-sm">
+                </div>
+                <div id="login-error" class="hidden text-alcatraz-crimson text-xs text-center font-bold">PIN incorrecto. Intenta de nuevo.</div>
+                <button onclick="attemptLogin()" class="w-full bg-alcatraz-glowing text-alcatraz-carbon py-3.5 rounded-xl font-black shadow-lg hover:bg-opacity-95 transition-all text-sm">
+                    <i class="fa-solid fa-key mr-1"></i> Desbloquear Caja
+                </button>
+            </div>
+        </div>
+    </main>
+
+    <!-- VISTA 4: PANELES GENERALES DE CAJA, INVENTARIOS, COMPRAS Y CRÉDITOS -->
+    <main id="view-admin" class="hidden flex-grow max-w-7xl mx-auto w-full p-4 md:p-6">
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-6 border-b border-slate-800 pb-4">
+            <div class="flex flex-wrap items-center gap-1.5">
+                <button onclick="switchTab('pos')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold bg-slate-800 text-white"><i class="fa-solid fa-cash-register mr-1 text-emerald-400"></i> Cobrar Cuentas</button>
+                <button onclick="switchTab('credits')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800"><i class="fa-solid fa-handshake-angle mr-1 text-cyan-400"></i> Libro de Créditos (Fiados)</button>
+                <button onclick="switchTab('inventory')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800"><i class="fa-solid fa-cubes mr-1 text-alcatraz-glowing"></i> Fichas / Inventario</button>
+                <button onclick="switchTab('purchases')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800"><i class="fa-solid fa-truck-loading mr-1 text-amber-500"></i> Compras Diarias</button>
+                <button onclick="switchTab('expenses')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800"><i class="fa-solid fa-receipt mr-1 text-rose-400"></i> Gastos Operativos</button>
+                <button onclick="switchTab('history')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800"><i class="fa-solid fa-clock-rotate-left mr-1"></i> Auditoría de Ventas</button>
+                <button onclick="switchTab('finances')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800"><i class="fa-solid fa-chart-line mr-1 text-lime-400"></i> Reporte Caja & Cierres</button>
+                <button onclick="switchTab('security')" class="admin-tab-btn px-3 py-2 rounded-lg text-sm font-bold text-slate-300 hover:bg-slate-800"><i class="fa-solid fa-shield-halved mr-1 text-cyan-400"></i> Llaves / Seguridad</button>
+            </div>
+            <div class="flex items-center gap-3">
+                <button onclick="loadDataFromCloud()" class="bg-slate-800 border border-slate-700 text-white font-bold text-xs px-3 py-2 rounded-xl hover:bg-slate-700"><i class="fa-solid fa-cloud-arrow-down mr-1"></i> Sync Google Sheets</button>
+                <button onclick="logoutAdmin()" class="bg-alcatraz-crimson text-white hover:bg-opacity-90 p-2 rounded-xl transition-all"><i class="fa-solid fa-power-off"></i></button>
+            </div>
+        </div>
+
+        <!-- SUBCONTENIDO A: COBRAR CUENTAS (POS) -->
+        <section id="tab-pos" class="admin-tab-content grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="lg:col-span-2 flex flex-col gap-4">
+                <div class="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-sm">
+                    <h3 class="font-serif text-lg font-bold mb-4 text-white flex items-center justify-between">
+                        <span>Celdas Activas en el Turno (Por Cobrar)</span>
+                        <span class="text-xs bg-slate-950 text-alcatraz-glowing px-3 py-1 rounded-full font-bold">Rondas Servidas</span>
+                    </h3>
+                    
+                    <!-- COMPACTACIÓN EN LISTADO TAMBIÉN EN CAJA POS -->
+                    <div class="flex flex-col gap-1.5 max-h-[220px] overflow-y-auto pr-1" id="pos-billing-tables-grid"></div>
+                </div>
+                
+                <div class="bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-sm flex-grow">
+                    <h3 class="font-serif text-lg font-bold mb-3 text-slate-300">Búsqueda / Venta Directa en Barra</h3>
+                    <input type="text" id="pos-search" oninput="searchPOSProducts()" placeholder="Buscar producto en barra..." class="w-full bg-slate-950 border border-slate-800 py-3 px-5 rounded-xl text-sm font-bold text-white mb-4">
+                    <div id="pos-grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3 max-h-[250px] overflow-y-auto pr-1"></div>
+                </div>
+            </div>
+            
+            <!-- LIQUIDADOR DE FACTURAS -->
+            <div class="bg-slate-900 p-5 rounded-2xl shadow-sm border border-slate-800 flex flex-col min-h-[550px]">
+                <h3 class="font-serif text-lg font-bold mb-3 pb-2 border-b border-slate-800 flex justify-between items-center text-white">
+                    <span>Liquidar Cuenta</span>
+                    <button onclick="clearPOSCart()" class="text-xs text-alcatraz-crimson font-bold hover:underline">Limpiar</button>
+                </h3>
+                
+                <div class="mb-3 space-y-2">
+                    <label class="text-[10px] uppercase font-bold text-slate-400">Referencia de Cuenta</label>
+                    <input type="text" id="pos-client-name" placeholder="Mesa / Nombre Cliente" class="w-full bg-slate-950 border border-slate-800 py-2.5 px-3 rounded-lg text-xs font-bold text-white">
+                    <input type="hidden" id="pos-selected-table-id" value="">
+                    <p class="text-[10px] text-slate-400" id="pos-waiter-indicator">Asignación: <span class="text-alcatraz-glowing font-bold">Ninguno</span></p>
+                </div>
+
+                <div id="pos-cart-items" class="flex-grow overflow-y-auto space-y-3 mb-4 pr-1 border-t border-slate-800 pt-2">
+                    <p class="text-center text-xs text-slate-500 py-8">Selecciona una celda activa de la izquierda para liquidar sus consumos.</p>
+                </div>
+                
+                <!-- HERRAMIENTA ESPECIAL: DIVISIÓN DE CUENTAS EN TIEMPO REAL -->
+                <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 mb-3">
+                    <div class="flex items-center justify-between">
+                        <span class="text-xs font-bold text-slate-400">Dividir cuenta en:</span>
+                        <div class="flex items-center bg-slate-900 rounded-lg border border-slate-700">
+                            <input type="number" id="split-people" value="1" min="1" oninput="calculateSplitBill()" class="w-12 text-center bg-transparent text-xs font-black text-white focus:outline-none">
+                            <span class="text-[10px] pr-2 text-slate-400">pers.</span>
+                        </div>
+                    </div>
+                    <div class="flex justify-between items-center mt-1.5 text-[11px] font-bold text-cyan-400">
+                        <span>Cada uno aporta:</span>
+                        <span id="split-result">$0</span>
+                    </div>
+                </div>
+
+                <div class="border-t border-slate-800 pt-3 space-y-3">
+                    <div class="flex justify-between font-bold text-xl text-white">
+                        <span>Total de Cuenta:</span><span id="pos-total" class="text-alcatraz-glowing text-2xl">$0</span>
+                    </div>
+                    
+                    <div class="grid grid-cols-3 gap-1.5">
+                        <button onclick="setPOSPayment('Efectivo')" id="pos-pay-cash" class="py-2.5 rounded-xl font-bold text-[10px] bg-slate-800 text-white border-2 border-alcatraz-glowing"><i class="fa-solid fa-wallet"></i> Efectivo</button>
+                        <button onclick="setPOSPayment('Transferencia')" id="pos-pay-transfer" class="py-2.5 rounded-xl font-bold text-[10px] bg-slate-800 text-white border-2 border-slate-700"><i class="fa-solid fa-mobile-screen"></i> Transf.</button>
+                        <button onclick="openCreditModal()" id="pos-pay-credit" class="py-2.5 rounded-xl font-bold text-[10px] bg-cyan-950/40 text-cyan-400 border border-cyan-800"><i class="fa-solid fa-handshake-angle"></i> Fiar (Crédito)</button>
+                    </div>
+
+                    <button onclick="processPOSSale()" class="w-full bg-emerald-600 text-white py-3.5 rounded-xl font-black shadow-lg text-xs hover:bg-emerald-700 transition-all font-bold">
+                        <i class="fa-solid fa-print mr-1"></i> Facturar Turno y Guardar
+                    </button>
+                </div>
+            </div>
+        </section>
+
+        <!-- SUBCONTENIDO B: LIBRO DE CRÉDITOS (FIADO Y ABONOS) -->
+        <section id="tab-credits" class="admin-tab-content hidden grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="bg-slate-900 p-6 rounded-2xl border border-slate-800 shadow-sm h-fit text-xs">
+                <h3 class="font-serif text-lg font-bold mb-4 border-b border-slate-800 pb-2 text-white"><i class="fa-solid fa-handshake-angle text-cyan-400 mr-2"></i>Crear Ficha de Crédito Directo</h3>
+                <div class="space-y-3 text-xs">
+                    <div>
+                        <label class="block font-bold mb-1 text-slate-300 uppercase">Nombre del Cliente / Deudor</label>
+                        <input type="text" id="credit-manual-name" placeholder="Ej: Francisco López" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white">
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1 text-slate-300 uppercase">Monto de Deuda Inicial ($)</label>
+                        <input type="number" id="credit-manual-amount" placeholder="Ej: 50000" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white font-bold">
+                    </div>
+                    <div>
+                        <label class="block font-bold mb-1 text-slate-300 uppercase">Días de Plazo de Pago</label>
+                        <input type="number" id="credit-manual-days" value="15" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white font-bold">
+                    </div>
+
+                    <button onclick="saveManualCredit()" class="w-full bg-cyan-600 hover:bg-cyan-700 text-white py-3 rounded-xl font-black shadow-md mt-2">
+                        Autorizar Crédito Directo
+                    </button>
+                </div>
+            </div>
+            
+            <div class="lg:col-span-2 bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800 overflow-x-auto">
+                <h3 class="font-serif text-lg font-bold mb-4 text-white">Libro de Cuentas por Cobrar (Fiados Activos)</h3>
+                <table class="w-full text-left text-xs">
+                    <thead class="bg-slate-950 border-b border-slate-800 text-slate-400">
+                        <tr>
+                            <th class="p-3">Registro Ref</th>
+                            <th class="p-3">Cliente / Deudor</th>
+                            <th class="p-3">Días Plazo</th>
+                            <th class="p-3 text-right">Monto Original</th>
+                            <th class="p-3 text-right">Saldo Pendiente</th>
+                            <th class="p-3 text-center">Gestión</th>
+                        </tr>
+                    </thead>
+                    <tbody id="credits-rows" class="divide-y divide-slate-800"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- SUBCONTENIDO C: FICHAS / INVENTARIO -->
+        <section id="tab-inventory" class="admin-tab-content hidden space-y-6">
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div class="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800 h-fit">
+                    <h3 class="font-serif text-lg font-bold mb-4 border-b border-slate-800 pb-2 text-white">
+                        <span>Ficha Técnica de Producto</span>
+                    </h3>
+                    <div class="space-y-4 text-xs">
+                        <input type="hidden" id="inv-edit-id" value="">
+                        <input type="hidden" id="inv-img-base64" value="">
+                        <div><label class="block font-bold mb-1 text-slate-300">Nombre Comercial</label><input type="text" id="inv-name" placeholder="Ej: Cerveza Águila" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white font-bold"></div>
+                        <div><label class="block font-bold mb-1 text-slate-300">Descripción / Detalles</label><input type="text" id="inv-desc" placeholder="Ej: Botella fría retornable..." class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white"></div>
+                        
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block font-bold mb-1 text-alcatraz-glowing">Categoría</label>
+                                <select id="inv-category" onchange="handleCategoryChange(event)" class="w-full bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl font-bold text-white">
+                                    <option value="Bebidas">Bebidas</option>
+                                    <option value="Licores">Licores</option>
+                                    <option value="Snacks">Snacks</option>
+                                    <option value="Cigarrillos">Cigarrillos</option>
+                                    <option value="NEW_CAT">+ Crear Categoría...</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block font-bold mb-1 text-slate-300">Presentación</label>
+                                <select id="inv-libras" class="w-full bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl text-white font-bold">
+                                    <option value="Botella">Botella</option>
+                                    <option value="Media">Media</option>
+                                    <option value="Copa">Copa</option>
+                                    <option value="Lata">Lata</option>
+                                    <option value="Unidad">Unidad</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="grid grid-cols-3 gap-3">
+                            <div>
+                                <label class="block font-bold mb-1 text-slate-300">Medida</label>
+                                <select id="inv-measure" class="w-full bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl text-white">
+                                    <option value="Unidad">Unidad</option>
+                                    <option value="Trago">Trago</option>
+                                    <option value="Paquete">Paquete</option>
+                                </select>
+                            </div>
+                            <div><label class="block font-bold mb-1 text-slate-300">Costo Compra ($)</label><input type="number" id="inv-cost" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white font-bold"></div>
+                            <div><label class="block font-bold mb-1 text-slate-300">Precio Venta ($)</label><input type="number" id="inv-price" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white font-bold"></div>
+                        </div>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div><label class="block font-bold mb-1 text-slate-300">Inventario Inicial</label><input type="number" id="inv-stock" value="100" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white font-bold"></div>
+                            <div><label class="block font-bold mb-1 text-slate-300">Foto</label><input type="file" id="inv-file" accept="image/*" onchange="handleInvImageUpload(event)" class="w-full text-[10px] text-slate-400"></div>
+                        </div>
+                        <button onclick="saveInventoryProduct()" class="w-full bg-alcatraz-glowing text-alcatraz-carbon py-3 rounded-xl font-black shadow-md">Guardar en el Bar</button>
+                    </div>
+                </div>
+                
+                <div class="lg:col-span-2 bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800 overflow-x-auto">
+                    <h3 class="font-serif text-lg font-bold mb-4 text-white">Catalogo de Inventario Activo</h3>
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-950 border-b border-slate-800 text-slate-400">
+                            <tr>
+                                <th class="p-3">Artículo</th>
+                                <th class="p-3">Categoría</th>
+                                <th class="p-3">Costo Compra</th>
+                                <th class="p-3">Precio Venta</th>
+                                <th class="p-3">Stock Fisico</th>
+                                <th class="p-3">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inventory-rows" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- SUBCONTENIDO D: COMPRAS A PROVEEDORES -->
+        <section id="tab-purchases" class="admin-tab-content hidden">
+            <div class="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800">
+                <h3 class="font-serif text-lg font-bold mb-4 text-white">Ingreso de Compras y Reabastecimiento Diario</h3>
+                <div class="space-y-3 text-xs mb-4">
+                    <input type="text" id="purch-supplier" placeholder="Proveedor / Distribuidora de Licores" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white">
+                    <select id="purch-prod-select" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl font-bold text-white"></select>
+                    <div class="grid grid-cols-2 gap-2">
+                        <input type="number" id="purch-qty" placeholder="Cantidad que ingresa" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white">
+                        <input type="number" id="purch-cost" placeholder="Costo Unitario ($)" class="w-full bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white">
+                    </div>
+                    <button onclick="addProdToPurchase()" class="w-full bg-alcatraz-glowing text-alcatraz-carbon py-2.5 rounded-xl font-black">Añadir a la Carga</button>
+                </div>
+                <div id="purch-cart-list" class="space-y-2 mb-3"></div>
+                <button onclick="processPurchase()" class="w-full bg-emerald-600 text-white py-3 rounded-xl font-black shadow-md">Confirmar Compra y Sumar a Stock</button>
+                
+                <div class="mt-6">
+                    <h3 class="font-bold text-white mb-2">Historial de Compras de Licores</h3>
+                    <table class="w-full text-left text-xs">
+                        <tbody id="purchases-rows"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+        
+        <!-- SUBCONTENIDO E: REGISTRO DE GASTOS FIJOS -->
+        <section id="tab-expenses" class="admin-tab-content hidden">
+            <div class="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800">
+                <h3 class="font-serif text-lg font-bold mb-4 text-white">Registrar Gasto Diario (Hielo, Carbón, Nómina, Servicios)</h3>
+                <div class="flex gap-2 text-xs mb-4">
+                    <input type="text" id="expense-desc" placeholder="Concepto del Gasto" class="flex-grow bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white">
+                    <input type="number" id="expense-value" placeholder="Valor $" class="w-32 bg-slate-950 border border-slate-800 px-3 py-2.5 rounded-xl text-white">
+                    <button onclick="saveExpense()" class="bg-rose-600 hover:bg-rose-700 text-white px-5 py-2.5 rounded-xl font-bold">Registrar</button>
+                </div>
+                <table class="w-full text-left text-xs">
+                    <tbody id="expenses-rows" class="divide-y divide-slate-800"></tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- SUBCONTENIDO F: AUDITORÍA DE FACTURAS -->
+        <section id="tab-history" class="admin-tab-content hidden space-y-4">
+            <div class="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800">
+                <h3 class="font-serif text-xl font-bold mb-4 text-white">Historial General de Cuentas Liquidadas</h3>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-950 border-b border-slate-800 text-slate-400">
+                            <tr>
+                                <th class="p-3">Ref</th>
+                                <th class="p-3">Detalle Consumo</th>
+                                <th class="p-3 text-right">Recaudado</th>
+                                <th class="p-3 text-center">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="history-rows" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+        
+        <!-- SUBCONTENIDO G: REPORTES CONTABLES & CIERRES -->
+        <section id="tab-finances" class="admin-tab-content hidden space-y-6">
+            <div class="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800 flex flex-col md:flex-row items-center justify-between gap-4">
+                <div>
+                    <h3 class="font-serif text-lg font-bold mb-1 text-white">Reportes y Cierre de Caja Contable</h3>
+                    <p class="text-xs text-slate-400 font-light">Segmenta y descarga la conciliación de tu bar en formato de Excel (.csv)</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-3">
+                    <select id="export-period" onchange="renderFinances()" class="bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm font-bold text-white">
+                        <option value="all">Todo el Historial</option>
+                        <option value="daily">Cierre Diario (Hoy)</option>
+                        <option value="weekly">Cierre Semanal</option>
+                        <option value="monthly">Cierre Mensual</option>
+                    </select>
+                    <button onclick="downloadCierreExcel()" class="bg-emerald-600 text-white font-black text-xs px-5 py-3.5 rounded-xl shadow-md hover:bg-opacity-95">
+                        <i class="fa-solid fa-file-excel mr-1"></i> Exportar a Excel
+                    </button>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div class="bg-slate-900 p-5 rounded-2xl shadow-sm border border-slate-800">
+                    <p class="text-xs font-bold text-slate-400 uppercase mb-1">Caja Bruta Recaudada</p>
+                    <h4 id="metric-revenue" class="text-2xl font-black text-emerald-400">$0</h4>
+                </div>
+                <div class="bg-slate-900 p-5 rounded-2xl shadow-sm border border-slate-800">
+                    <p class="text-xs font-bold text-slate-400 uppercase mb-1">Costo de Bebidas/Licores</p>
+                    <h4 id="metric-cost" class="text-2xl font-black text-rose-500">$0</h4>
+                </div>
+                <div class="bg-slate-900 p-5 rounded-2xl shadow-sm border border-slate-800">
+                    <p class="text-xs font-bold text-slate-400 uppercase mb-1">Gastos Operativos</p>
+                    <h4 id="metric-expenses" class="text-2xl font-black text-rose-500">$0</h4>
+                </div>
+                <div class="bg-slate-900 p-5 rounded-2xl shadow-sm bg-slate-950 border-l-4 border-alcatraz-glowing">
+                    <p class="text-xs font-bold text-slate-300 uppercase mb-1">Utilidad Neta de Turno</p>
+                    <h4 id="metric-profit" class="text-2xl font-black text-alcatraz-glowing">$0</h4>
+                </div>
+            </div>
+
+            <div class="bg-slate-900 p-6 rounded-2xl shadow-sm border border-slate-800">
+                <h3 class="font-serif text-lg font-bold mb-3 text-white flex items-center gap-2">
+                    <i class="fa-solid fa-ranking-star text-alcatraz-glowing"></i> Récord de Ventas por Mesero
+                </h3>
+                <p class="text-xs text-slate-400 font-light mb-4">Registro acumulado del volumen facturado por tus meseros en este periodo.</p>
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left text-xs">
+                        <thead class="bg-slate-950 border-b border-slate-800 text-slate-400">
+                            <tr>
+                                <th class="p-3 font-bold">Mesero / ID</th>
+                                <th class="p-3 font-bold">Rondas Despachadas</th>
+                                <th class="p-3 font-bold text-right">Recaudación Lograda ($)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="waiters-leaderboard-rows" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- NUEVA SECCIÓN: PESTAÑA AJUSTES DE SEGURIDAD (CAJA) -->
+        <section id="tab-security" class="admin-tab-content hidden max-w-xl mx-auto py-6">
+            <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl">
+                <h3 class="font-serif text-xl font-bold mb-2 text-white flex items-center gap-2"><i class="fa-solid fa-shield-halved text-alcatraz-glowing"></i> Llaves de Seguridad</h3>
+                <p class="text-xs text-slate-400 mb-6 font-light">Actualiza las contraseñas de las terminales operativas para evitar ingresos no autorizados.</p>
+                
+                <div class="space-y-4 text-xs">
+                    <div class="border-b border-slate-800 pb-4">
+                        <h4 class="font-black text-alcatraz-glowing uppercase tracking-wider mb-3">1. Acceso de Personal (Toma de Pedidos)</h4>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block font-bold text-slate-300 mb-1">Usuario Personal</label>
+                                <input type="text" id="cfg-staff-user" class="w-full bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl text-white">
+                            </div>
+                            <div>
+                                <label class="block font-bold text-slate-300 mb-1">Contraseña</label>
+                                <input type="text" id="cfg-staff-pass" class="w-full bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl text-white">
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="pt-2">
+                        <h4 class="font-black text-emerald-400 uppercase tracking-wider mb-3">2. Acceso Administrativo (Caja POS)</h4>
+                        <div class="grid grid-cols-2 gap-3">
+                            <div>
+                                <label class="block font-bold text-slate-300 mb-1">Usuario Admin</label>
+                                <input type="text" id="cfg-admin-user" class="w-full bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl text-white">
+                            </div>
+                            <div>
+                                <label class="block font-bold text-slate-300 mb-1">PIN Contable</label>
+                                <input type="text" id="cfg-admin-pass" class="w-full bg-slate-950 border border-slate-800 px-3 py-2 rounded-xl text-white">
+                            </div>
+                        </div>
+                    </div>
+
+                    <button onclick="saveSecurityCredentials()" class="w-full bg-alcatraz-glowing text-alcatraz-carbon py-3 rounded-xl font-black mt-4 shadow-lg hover:bg-opacity-95 uppercase">
+                        Aplicar Nuevas Llaves
+                    </button>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <!-- TRÁMITE DE FIADO / MODAL CRÉDITO -->
+    <div id="credit-modal" class="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4">
+        <div class="bg-slate-900 max-w-sm w-full p-6 rounded-2xl border border-slate-800 text-xs">
+            <h3 class="font-serif text-lg font-bold text-cyan-400 mb-2"><i class="fa-solid fa-handshake-angle"></i> Autorizar Fiado</h3>
+            <p class="text-slate-400 mb-4 leading-relaxed">Asigna esta comanda al registro de crédito de un deudor de confianza.</p>
+            
+            <div class="space-y-3">
+                <div>
+                    <label class="block font-bold text-slate-300 mb-1">Nombre Completo Cliente</label>
+                    <input type="text" id="credit-client-name" class="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-lg text-white font-bold">
+                </div>
+                <div>
+                    <label class="block font-bold text-slate-300 mb-1">Días de Plazo de Pago</label>
+                    <input type="number" id="credit-days" value="15" class="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-lg text-white font-bold">
+                </div>
+                <div class="flex gap-2 pt-2">
+                    <button onclick="closeCreditModal()" class="w-1/2 bg-slate-800 text-slate-300 py-2 rounded-xl font-bold">Cancelar</button>
+                    <button onclick="confirmAndProcessCreditSale()" class="w-1/2 bg-cyan-600 text-white py-2 rounded-xl font-bold">Aprobar Fiado</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PANEL DE ABONO A CRÉDITOS -->
+    <div id="payment-modal" class="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 flex items-center justify-center hidden p-4">
+        <div class="bg-slate-900 max-w-sm w-full p-6 rounded-2xl border border-slate-800 text-xs">
+            <h3 class="font-serif text-lg font-bold text-emerald-400 mb-2"><i class="fa-solid fa-money-bill-trend-up"></i> Registrar Abono</h3>
+            <p class="text-slate-400 mb-4" id="payment-modal-desc"></p>
+            
+            <input type="hidden" id="payment-credit-id" value="">
+            <div class="space-y-3">
+                <div>
+                    <label class="block font-bold text-slate-300 mb-1">Monto del Abono ($)</label>
+                    <input type="number" id="payment-amount-input" class="w-full bg-slate-950 border border-slate-800 p-2.5 rounded-lg text-white font-bold text-base">
+                </div>
+                <div class="flex gap-2 pt-2">
+                    <button onclick="closePaymentModal()" class="w-1/2 bg-slate-800 text-slate-300 py-2 rounded-xl font-bold">Cancelar</button>
+                    <button onclick="processCreditPayment()" class="w-1/2 bg-emerald-600 text-white py-2 rounded-xl font-bold">Guardar Abono</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- FOOTER GENERAL -->
+    <footer class="bg-slate-950 text-slate-300 py-6 mt-auto border-t-4 border-alcatraz-glowing w-full">
+        <div class="max-w-7xl mx-auto px-4 flex flex-col items-center justify-center gap-4">
+            <div class="text-center font-sans text-xs tracking-wider opacity-80">
+                © 2026 EL PARCHE DE ALCATRAZ. Control de Comandas y Pabellones de Licores.
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        const DB_PREFIX = "ALCATRAZ_BAR_V1_"; 
+
+        // --- SISTEMA DE CREDENCIALES CONFIGURABLES (LOCAL) ---
+        let staffUser = localStorage.getItem(DB_PREFIX + 'staffUser') || "staff";
+        let staffPass = localStorage.getItem(DB_PREFIX + 'staffPass') || "1234";
+        let adminUser = localStorage.getItem(DB_PREFIX + 'adminUser') || "Admin";
+        let adminPass = localStorage.getItem(DB_PREFIX + 'adminPass') || "6868";
+
+        let isStaffLoggedIn = JSON.parse(localStorage.getItem(DB_PREFIX + 'isStaffLoggedIn')) || false;
+
+        // --- PRESET INICIAL DEL CATÁLOGO DEL BAR ---
+        const defaultProducts = [
+            { id: "ALC-01", name: "Cerveza Águila", desc: "Cerveza rubia tradicional, botella fría", category: "Bebidas", measure: "Unidad", cost: 2500, price: 5000, stock: 120, sales: 0, img: "https://images.unsplash.com/photo-1608270586620-248524c67de9?q=80&w=300&auto=format&fit=crop", porcion: "Botella" },
+            { id: "ALC-02", name: "Cerveza Coronita", desc: "Cerveza rubia suave mexicana 210ml", category: "Bebidas", measure: "Unidad", cost: 3800, price: 7000, stock: 80, sales: 0, img: "https://images.unsplash.com/photo-1571613316887-6f8d5cbf7ef7?q=80&w=300&auto=format&fit=crop", porcion: "Botella" },
+            { id: "ALC-03", name: "Gaseosa", desc: "Sabores surtidos 350ml", category: "Bebidas", measure: "Unidad", cost: 1500, price: 3000, stock: 100, sales: 0, img: "https://images.unsplash.com/photo-1622483767028-3f66f32aef97?q=80&w=300&auto=format&fit=crop", porcion: "Lata" },
+            { id: "ALC-04", name: "Jugo", desc: "Hit en botella, sabores variados", category: "Bebidas", measure: "Unidad", cost: 1800, price: 3500, stock: 50, sales: 0, img: "https://images.unsplash.com/photo-1600271886742-f049cd451bba?q=80&w=300&auto=format&fit=crop", porcion: "Botella" },
+            { id: "ALC-05", name: "Malta", desc: "Pony malta botella tradicional", category: "Bebidas", measure: "Unidad", cost: 1800, price: 3500, stock: 60, sales: 0, img: "https://images.unsplash.com/photo-1596450514735-111a2fe02935?q=80&w=300&auto=format&fit=crop", porcion: "Botella" },
+            { id: "ALC-06", name: "Agua", desc: "Agua mineral con o sin gas", category: "Bebidas", measure: "Unidad", cost: 1000, price: 2500, stock: 120, sales: 0, img: "https://images.unsplash.com/photo-1548839140-29a749e1cf4d?q=80&w=300&auto=format&fit=crop", porcion: "Botella" },
+            { id: "ALC-07", name: "Aguardiente Amarillo (Media)", desc: "Aguardiente Amarillo de Manzanares 375ml", category: "Licores", measure: "Unidad", cost: 28000, price: 45000, stock: 24, sales: 0, img: "https://images.unsplash.com/photo-1527061011665-3652c757a4d4?q=80&w=300&auto=format&fit=crop", porcion: "Media" },
+            { id: "ALC-08", name: "Aguardiente Amarillo (Botella)", desc: "Aguardiente Amarillo de Manzanares 750ml", category: "Licores", measure: "Unidad", cost: 52000, price: 85000, stock: 15, sales: 0, img: "https://images.unsplash.com/photo-1527061011665-3652c757a4d4?q=80&w=300&auto=format&fit=crop", porcion: "Botella" },
+            { id: "ALC-09", name: "Aguardiente Antioqueño (Media)", desc: "Antioqueño tapa azul sin azúcar 375ml", category: "Licores", measure: "Unidad", cost: 26000, price: 42000, stock: 30, sales: 0, img: "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?q=80&w=300&auto=format&fit=crop", porcion: "Media" },
+            { id: "ALC-10", name: "Aguardiente Antioqueño (Botella)", desc: "Antioqueño tapa azul sin azúcar 750ml", category: "Licores", measure: "Unidad", cost: 48000, price: 78000, stock: 20, sales: 0, img: "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?q=80&w=300&auto=format&fit=crop", porcion: "Botella" },
+            { id: "ALC-11", name: "Copa de Whisky", desc: "Whisky escocés en trago con hielo", category: "Licores", measure: "Trago", cost: 5000, price: 15000, stock: 99, sales: 0, img: "https://images.unsplash.com/photo-1527061011665-3652c757a4d4?q=80&w=300&auto=format&fit=crop", porcion: "Copa" }
+        ];
+
+        // --- SISTEMA PRESET DE CELDAS (1 VENTA DIRECTA + 30 CELDAS FÍSICAS) ---
+        let mesas = [];
+        mesas.push({
+            id: "directa",
+            name: "Venta Directa",
+            label: "⚡ Venta Directa",
+            status: "Libre",
+            rondas: [],
+            waiter: ""
+        });
+        for (let i = 1; i <= 30; i++) {
+            mesas.push({
+                id: i.toString(),
+                name: `Celda ${i}`,
+                label: `Celda ${i}`,
+                status: "Libre",
+                rondas: [], 
+                waiter: ""
+            });
+        }
+
+        let categories = ["Bebidas", "Licores", "Snacks", "Cigarrillos"];
+        
+        // --- ASIGNACIÓN DE ESTADO ---
+        let products = JSON.parse(localStorage.getItem(DB_PREFIX + 'products')) || defaultProducts;
+        let orders = JSON.parse(localStorage.getItem(DB_PREFIX + 'orders')) || [];
+        let expenses = JSON.parse(localStorage.getItem(DB_PREFIX + 'expenses')) || [];
+        let purchasesHistory = JSON.parse(localStorage.getItem(DB_PREFIX + 'purchases')) || [];
+        let credits = JSON.parse(localStorage.getItem(DB_PREFIX + 'credits')) || [];
+        let activeWaiter = localStorage.getItem(DB_PREFIX + 'active_waiter') || "";
+        
+        // Corrección de integridad de datos para 31 elementos en caché local
+        let loadedMesas = JSON.parse(localStorage.getItem(DB_PREFIX + 'mesas_v2'));
+        if (loadedMesas && loadedMesas.length === 31) {
+            mesas = loadedMesas;
+        }
+
+        let currentRoundCart = []; 
+        let currentWaiterMesaId = "directa"; // Default en la Venta Directa rápida
+        let activeCategoryFilter = "all";
+        let posPayment = "Efectivo";
+        let selectedPOSCart = []; 
+        let purchCart = [];
+
+        function saveState() {
+            localStorage.setItem(DB_PREFIX + 'products', JSON.stringify(products));
+            localStorage.setItem(DB_PREFIX + 'orders', JSON.stringify(orders));
+            localStorage.setItem(DB_PREFIX + 'expenses', JSON.stringify(expenses));
+            localStorage.setItem(DB_PREFIX + 'purchases', JSON.stringify(purchasesHistory));
+            localStorage.setItem(DB_PREFIX + 'credits', JSON.stringify(credits));
+            localStorage.setItem(DB_PREFIX + 'mesas_v2', JSON.stringify(mesas));
+            if (activeWaiter) {
+                localStorage.setItem(DB_PREFIX + 'active_waiter', activeWaiter);
+            } else {
+                localStorage.removeItem(DB_PREFIX + 'active_waiter');
+            }
+        }
+
+        // --- CARGA DE DATOS DESDE GOOGLE CLOUD (doGet) ---
+        async function loadDataFromCloud() {
+            try {
+                const response = await fetch(URL_API);
+                const data = await response.json();
+                if(data) {
+                    if(data.products && data.products.length > 0) {
+                        products = data.products;
+                        localStorage.setItem(DB_PREFIX + 'products', JSON.stringify(products));
+                    }
+                    if(data.orders) {
+                        orders = data.orders;
+                        localStorage.setItem(DB_PREFIX + 'orders', JSON.stringify(orders));
+                    }
+                    if(data.expenses) {
+                        expenses = data.expenses;
+                        localStorage.setItem(DB_PREFIX + 'expenses', JSON.stringify(expenses));
+                    }
+                    if(data.credits) {
+                        credits = data.credits;
+                        localStorage.setItem(DB_PREFIX + 'credits', JSON.stringify(credits));
+                    }
+                    renderMesasSelector();
+                    renderMeseroProductCatalog();
+                    console.log("Alcatraz sincronizada.");
+                }
+            } catch (error) {
+                console.error("No se pudo conectar con GAS:", error);
+            }
+        }
+
+        // --- ALERTA SONORA DE PREPARACIÓN ---
+        function playAlertSound() {
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioCtx.createOscillator();
+                const gainNode = audioCtx.createGain();
+                oscillator.connect(gainNode);
+                gainNode.connect(audioCtx.destination);
+                oscillator.type = 'sine';
+                oscillator.frequency.value = 750; 
+                gainNode.gain.setValueAtTime(0.2, audioCtx.currentTime);
+                oscillator.start();
+                oscillator.stop(audioCtx.currentTime + 0.12);
+            } catch (e) {}
+        }
+
+        // --- FUNCIÓN REEMPLAZANTE DE ALERTS DEL NAVEGADOR (TOAST) ---
+        window.alert = function(message) {
+            const container = document.getElementById('toast-container');
+            if(!container) return;
+            const toast = document.createElement('div');
+            toast.className = `mx-auto px-6 py-3 rounded-xl text-white text-xs font-bold shadow-2xl transform transition-all duration-300 -translate-y-5 opacity-0 flex items-center justify-center gap-2 bg-slate-900 border border-alcatraz-glowing pointer-events-auto`;
+            toast.innerHTML = `<i class="fa-solid fa-bell text-alcatraz-glowing"></i> <span>${message}</span>`;
+            container.appendChild(toast);
+            setTimeout(() => { toast.classList.remove('-translate-y-5', 'opacity-0'); }, 10);
+            setTimeout(() => { toast.classList.add('-translate-y-5', 'opacity-0'); setTimeout(() => toast.remove(), 300); }, 3500);
+        };
+
+        // --- STREAMING_CHUNK:Controlando la seguridad de las celdas... ---
+        // --- SISTEMA DE LOGINS DE SEGURIDAD ---
+        function attemptStaffLogin() {
+            const user = document.getElementById('staff-login-user').value.trim();
+            const pass = document.getElementById('staff-login-pass').value.trim();
+            
+            if (user === staffUser && pass === staffPass) {
+                isStaffLoggedIn = true;
+                localStorage.setItem(DB_PREFIX + 'isStaffLoggedIn', 'true');
+                document.getElementById('staff-login-error').classList.add('hidden');
+                document.getElementById('staff-login-user').value = '';
+                document.getElementById('staff-login-pass').value = '';
+                
+                updateAccessUI();
+                switchView('mesero');
+                alert("Sesión de personal autorizada.");
+            } else {
+                document.getElementById('staff-login-error').classList.remove('hidden');
+            }
+        }
+
+        function lockSystem() {
+            isStaffLoggedIn = false;
+            localStorage.setItem(DB_PREFIX + 'isStaffLoggedIn', 'false');
+            updateAccessUI();
+            switchView('home');
+            alert("Sistema cerrado y bloqueado.");
+        }
+
+        function updateAccessUI() {
+            const selector = document.getElementById('role-selector-container');
+            const staffBtn = document.getElementById('staff-auth-trigger');
+            if (isStaffLoggedIn) {
+                selector.classList.remove('hidden');
+                staffBtn.classList.add('hidden');
+            } else {
+                selector.classList.add('hidden');
+                staffBtn.classList.remove('hidden');
+            }
+        }
+
+        // --- SISTEMA DE CAMBIO DE ROLES ---
+        function switchView(v) {
+            ['home', 'staff-login', 'mesero', 'cocina', 'pos-login', 'admin'].forEach(x => {
+                const el = document.getElementById(`view-${x}`);
+                if (el) el.classList.add('hidden');
+            });
+            document.querySelectorAll('.nav-role-btn').forEach(btn => {
+                btn.className = "nav-role-btn px-4 py-2 rounded-xl text-xs font-black text-slate-400 transition-all hover:text-white";
+            });
+
+            // Evitar ingresos no autorizados por bypass de botones
+            if (!isStaffLoggedIn && (v === 'mesero' || v === 'cocina' || v === 'admin')) {
+                v = 'home';
+            }
+
+            document.getElementById(`view-${v}`).classList.remove('hidden');
+            let targetBtnId = `btn-view-${v}`;
+            if (v === 'pos-login' || v === 'admin') targetBtnId = 'btn-view-admin';
+            const targetBtn = document.getElementById(targetBtnId);
+            if (targetBtn) {
+                targetBtn.className = "nav-role-btn px-4 py-2 rounded-xl text-xs font-black bg-alcatraz-glowing text-alcatraz-carbon";
+            }
+
+            if(v === 'mesero') initMeseroView();
+            if(v === 'cocina') renderBarKDS();
+            if(v === 'admin') switchTab('pos');
+        }
+
+        function switchTab(t) {
+            document.querySelectorAll('.admin-tab-content').forEach(c => c.classList.add('hidden')); 
+            document.getElementById(`tab-${t}`).classList.remove('hidden');
+            if(t==='pos') { renderBillingTables(); renderPOSProducts(); }
+            if(t==='credits') renderCreditsTab();
+            if(t==='inventory') renderInventory(); 
+            if(t==='purchases') renderPurchasesTab(); 
+            if(t==='expenses') renderExpenses(); 
+            if(t==='history') renderHistory(); 
+            if(t==='finances') renderFinances();
+            if(t==='security') {
+                document.getElementById('cfg-staff-user').value = staffUser;
+                document.getElementById('cfg-staff-pass').value = staffPass;
+                document.getElementById('cfg-admin-user').value = adminUser;
+                document.getElementById('cfg-admin-pass').value = adminPass;
+            }
+        }
+
+        function saveSecurityCredentials() {
+            const sU = document.getElementById('cfg-staff-user').value.trim();
+            const sP = document.getElementById('cfg-staff-pass').value.trim();
+            const aU = document.getElementById('cfg-admin-user').value.trim();
+            const aP = document.getElementById('cfg-admin-pass').value.trim();
+
+            if (!sU || !sP || !aU || !aP) {
+                return alert("Ningún campo de credenciales puede quedar vacío.");
+            }
+
+            staffUser = sU; localStorage.setItem(DB_PREFIX + 'staffUser', staffUser);
+            staffPass = sP; localStorage.setItem(DB_PREFIX + 'staffPass', staffPass);
+            adminUser = aU; localStorage.setItem(DB_PREFIX + 'adminUser', adminUser);
+            adminPass = aP; localStorage.setItem(DB_PREFIX + 'adminPass', adminPass);
+
+            alert("Nuevas llaves de acceso aplicadas con éxito.");
+            switchTab('pos');
+        }
+
+        // --- STREAMING_CHUNK:Inicializando logicas de comanda y mesero... ---
+        // --- OPERACIONES: VISTA MESERO ---
+        function initMeseroView() {
+            renderMesasSelector();
+            renderMeseroProductCatalog();
+            renderMeseroCategoryFilters();
+            updateWaiterUI();
+            if (mesas.length > 0) {
+                selectMesaForWaiter(currentWaiterMesaId);
+            }
+        }
+
+        function registerWaiter() {
+            const nameInput = document.getElementById('waiter-name-input').value.trim();
+            if (!nameInput) return alert("Escribe tu nombre.");
+            activeWaiter = nameInput;
+            saveState();
+            updateWaiterUI();
+            alert(`Asignado: ${activeWaiter}`);
+        }
+
+        function updateWaiterUI() {
+            const label = document.getElementById('active-waiter-label');
+            const input = document.getElementById('waiter-name-input');
+            if (activeWaiter) {
+                label.innerHTML = `Asignado: <span class="text-emerald-400 font-extrabold uppercase"><i class="fa-solid fa-user-check"></i> ${activeWaiter}</span>`;
+                input.value = activeWaiter;
+            } else {
+                label.innerHTML = `Asignado: <span class="text-alcatraz-crimson font-extrabold uppercase">Sin Registrar</span>`;
+                input.value = '';
+            }
+        }
+
+        // --- RENDERIZADO OPTIMIZADO DE LAS CELDAS EN FORMATO LISTADO COMPACTO ---
+        function renderMesasSelector() {
+            const container = document.getElementById('mesas-grid-container');
+            container.innerHTML = '';
+            
+            mesas.forEach(m => {
+                let statusClass = "bg-slate-950/60 border-slate-800/80 text-slate-300 hover:bg-slate-800/60";
+                let statusIndicator = `<span class="w-2.5 h-2.5 rounded-full bg-slate-700 block border border-slate-600"></span>`;
+                
+                if (m.rondas.length > 0) {
+                    const hasPending = m.rondas.some(r => r.status === 'Pendiente');
+                    if (hasPending) {
+                        statusClass = "bg-amber-950/20 border-amber-600/40 text-amber-200 hover:bg-amber-900/20";
+                        statusIndicator = `<span class="w-2.5 h-2.5 rounded-full bg-amber-500 block animate-pulse shadow-[0_0_10px_#F59E0B]"></span>`;
+                    } else {
+                        statusClass = "bg-emerald-950/20 border-emerald-600/40 text-emerald-200 hover:bg-emerald-900/20";
+                        statusIndicator = `<span class="w-2.5 h-2.5 rounded-full bg-emerald-500 block shadow-[0_0_10px_#10B981]"></span>`;
+                    }
+                }
+
+                if (m.id === "directa") {
+                    statusClass = "bg-cyan-950/20 border-cyan-800/40 text-cyan-200 hover:bg-cyan-900/20";
+                    if (m.rondas.length === 0) {
+                        statusIndicator = `<span class="w-2.5 h-2.5 rounded-full bg-cyan-600 block"></span>`;
+                    }
+                }
+
+                let selectedBorder = m.id === currentWaiterMesaId ? "ring-2 ring-alcatraz-glowing" : "";
+
+                container.innerHTML += `
+                    <button onclick="selectMesaForWaiter('${m.id}')" class="w-full p-3 rounded-xl border text-left transition-all ${statusClass} ${selectedBorder} flex items-center justify-between shadow-md relative text-xs">
+                        <div class="flex items-center gap-3 min-w-0">
+                            ${statusIndicator}
+                            <span class="font-extrabold uppercase truncate text-[11px] tracking-wider text-slate-200">${m.label}</span>
+                        </div>
+                        <div class="flex items-center gap-2 shrink-0">
+                            <span class="text-[10px] bg-slate-950 border border-slate-800 px-2.5 py-1 rounded-md font-black text-slate-400">
+                                ${m.rondas.length} Rondas
+                            </span>
+                        </div>
+                    </button>`;
+            });
+        }
+
+        function selectMesaForWaiter(mesaId) {
+            currentWaiterMesaId = mesaId;
+            const mesaObj = mesas.find(m => m.id === mesaId);
+            
+            document.getElementById('mesero-selected-table-title').innerHTML = `
+                ${mesaObj.label} 
+                <span class="text-[10px] px-2 py-0.5 rounded-full ${mesaObj.rondas.length === 0 ? 'bg-slate-950 text-slate-400' : 'bg-alcatraz-glowing/20 text-alcatraz-glowing'} ml-2 font-black">${mesaObj.rondas.length} Rondas Activas</span>
+            `;
+            
+            document.getElementById('mesero-table-alias').value = (mesaObj.label !== mesaObj.name && mesaObj.id !== "directa") ? mesaObj.label : '';
+            
+            renderMesasSelector();
+            renderWaiterCart();
+        }
+
+        function applyTableAlias() {
+            if (!currentWaiterMesaId) return alert("Selecciona primero una celda.");
+            const alias = document.getElementById('mesero-table-alias').value.trim();
+            const mesaObj = mesas.find(m => m.id === currentWaiterMesaId);
+            
+            if (alias) {
+                mesaObj.label = alias;
+            } else {
+                mesaObj.label = mesaObj.id === "directa" ? "⚡ Venta Directa" : mesaObj.name; 
+            }
+            
+            saveState();
+            selectMesaForWaiter(currentWaiterMesaId);
+            alert(`Nombre de la celda cambiado.`);
+        }
+
+        // --- FILTRADO DE CATEGORÍAS ---
+        function renderMeseroCategoryFilters() {
+            const container = document.getElementById('mesero-category-filters');
+            container.innerHTML = `<button onclick="setMeseroCategory('all')" class="px-3.5 py-1.5 rounded-lg text-[10px] font-bold bg-slate-950 border border-slate-800 text-white shrink-0 active:bg-alcatraz-glowing">TODO</button>`;
+            categories.forEach(cat => {
+                container.innerHTML += `<button onclick="setMeseroCategory('${cat}')" class="px-3.5 py-1.5 rounded-lg text-[10px] font-bold bg-slate-800 border border-slate-700 text-slate-300 shrink-0 hover:bg-slate-700 hover:text-white transition">${cat.toUpperCase()}</button>`;
+            });
+        }
+
+        function setMeseroCategory(cat) {
+            activeCategoryFilter = cat;
+            renderMeseroProductCatalog();
+        }
+
+        // --- EXPOSICIÓN DEL CATÁLOGO DE INVENTARIO ---
+        function renderMeseroProductCatalog() {
+            const container = document.getElementById('mesero-menu-grid');
+            container.innerHTML = '';
+            
+            let list = products;
+            if (activeCategoryFilter !== 'all') {
+                list = products.filter(p => p.category === activeCategoryFilter);
+            }
+            
+            list.forEach(p => {
+                let isCritical = p.stock <= 10;
+                let bgClass = isCritical ? "border-rose-900/50 bg-rose-950/10" : "bg-slate-950/40 border-slate-800";
+                let badgeClass = isCritical ? "bg-rose-900 text-white" : "bg-slate-800 text-slate-300";
+
+                container.innerHTML += `
+                    <div onclick="addDishToRoundCart('${p.id}')" class="border p-2 rounded-xl cursor-pointer hover:bg-slate-800/40 transition flex gap-2 items-center h-20 shadow-md ${bgClass}">
+                        <img src="${p.img}" class="w-11 h-11 rounded-lg object-cover bg-slate-800" onerror="this.src='https://images.unsplash.com/photo-1608270586620-248524c67de9?q=80&w=300&auto=format&fit=crop'">
+                        <div class="flex-grow min-w-0">
+                            <p class="font-extrabold text-xs text-slate-100 truncate leading-tight">${p.name}</p>
+                            <p class="font-black text-[11px] text-alcatraz-glowing mt-0.5">$${p.price.toLocaleString()}</p>
+                            <span class="text-[8px] font-bold px-1.5 py-0.5 rounded ${badgeClass}">Stock: ${p.stock}</span>
+                        </div>
+                    </div>`;
+            });
+        }
+
+        // --- CONSTRUCTORA DE RONDAS ---
+        function addDishToRoundCart(id) {
+            if (!currentWaiterMesaId) return alert("Selecciona primero una Celda de Alcatraz.");
+            if (!activeWaiter) return alert("Ingresa tu nombre para asignarte el pedido.");
+            
+            const productObj = products.find(p => p.id === id);
+            
+            let totalOrdered = 0;
+            let existingInCart = currentRoundCart.find(i => i.id === id);
+            if(existingInCart) totalOrdered = existingInCart.quantity;
+
+            if (productObj.stock <= totalOrdered) {
+                return alert("¡Alerta! Stock insuficiente de este producto.");
+            }
+
+            if (existingInCart) {
+                existingInCart.quantity++;
+            } else {
+                currentRoundCart.push({
+                    id: productObj.id,
+                    name: productObj.name,
+                    price: productObj.price,
+                    quantity: 1,
+                    note: ""
+                });
+            }
+
+            renderWaiterCart();
+        }
+
+        function changeRoundCartQty(idx, delta) {
+            currentRoundCart[idx].quantity += delta;
+            
+            if (currentRoundCart[idx].quantity <= 0) {
+                currentRoundCart.splice(idx, 1);
+            }
+
+            renderWaiterCart();
+        }
+
+        // --- DESPACHAR LA NUEVA RONDA ---
+        function dispatchWaiterOrder() {
+            if (!currentWaiterMesaId) return alert("Selecciona la mesa.");
+            if (!currentRoundCart.length) return alert("No has seleccionado bebidas para esta ronda.");
+            if (!activeWaiter) return alert("Registra tu Nombre de Mesera/o primero.");
+
+            const mesaObj = mesas.find(m => m.id === currentWaiterMesaId);
+            
+            currentRoundCart.forEach(item => {
+                const p = products.find(prod => prod.id === item.id);
+                if(p) p.stock = Math.max(0, p.stock - item.quantity);
+            });
+
+            let newRound = {
+                id: "RND-" + (mesaObj.rondas.length + 1),
+                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                items: [...currentRoundCart],
+                status: "Pendiente"
+            };
+
+            mesaObj.rondas.push(newRound);
+            mesaObj.waiter = activeWaiter;
+            mesaObj.status = "Ocupada";
+
+            currentRoundCart = []; 
+            
+            saveState();
+            renderWaiterCart();
+            renderMesasSelector();
+            renderMeseroProductCatalog();
+            renderBarKDS();
+            renderBillingTables();
+
+            alert(`Ronda enviada a barra.`);
+        }
+
+        // --- TIMELINE DE RONDAS EN COLA Y ENVIADAS ---
+        function renderWaiterCart() {
+            const container = document.getElementById('mesero-cart-items');
+            container.innerHTML = '';
+            
+            if (!currentWaiterMesaId) {
+                container.innerHTML = `<p class="text-center text-xs text-slate-500 py-8">Selecciona un pabellón.</p>`;
+                document.getElementById('mesero-table-total').innerText = "$0";
+                document.getElementById('current-round-total').innerText = "$0";
+                return;
+            }
+
+            const mesaObj = mesas.find(m => m.id === currentWaiterMesaId);
+            
+            let totalAcumulado = 0;
+            mesaObj.rondas.forEach(r => {
+                r.items.forEach(i => totalAcumulado += (i.price * i.quantity));
+            });
+            document.getElementById('mesero-table-total').innerText = `$${totalAcumulado.toLocaleString()}`;
+
+            let totalRondaActual = currentRoundCart.reduce((s, i) => s + (i.price * i.quantity), 0);
+            document.getElementById('current-round-total').innerText = `$${totalRondaActual.toLocaleString()}`;
+
+            let rondasHtml = "";
+            if (currentRoundCart.length > 0) {
+                let itemsHtml = currentRoundCart.map((item, idx) => `
+                    <div class="flex justify-between items-center text-xs p-1">
+                        <span class="text-slate-200">🍺 <b>${item.quantity}x</b> ${item.name}</span>
+                        <div class="flex items-center gap-2">
+                            <span class="font-extrabold text-alcatraz-glowing">$${(item.price * item.quantity).toLocaleString()}</span>
+                            <div class="flex items-center bg-slate-950 border border-slate-800 rounded">
+                                <button onclick="changeRoundCartQty(${idx}, -1)" class="px-2 font-black text-slate-400 hover:text-white">-</button>
+                                <button onclick="changeRoundCartQty(${idx}, 1)" class="px-2 font-black text-slate-400 hover:text-white">+</button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+
+                rondasHtml += `
+                    <div class="p-3 bg-slate-950 border-2 border-dashed border-alcatraz-glowing rounded-xl mb-3">
+                        <p class="text-[10px] font-black uppercase text-alcatraz-glowing mb-1.5"><i class="fa-solid fa-hourglass-start animate-spin"></i> Ronda por Enviar (Cola)</p>
+                        <div class="space-y-1">${itemsHtml}</div>
+                    </div>`;
+            }
+
+            if (mesaObj.rondas.length === 0 && currentRoundCart.length === 0) {
+                container.innerHTML = rondasHtml + `<p class="text-center text-xs text-slate-500 py-8">Pabellón libre. Elige bebidas de arriba para abrir comanda.</p>`;
+                return;
+            }
+
+            mesaObj.rondas.forEach((r, rIdx) => {
+                let rItemsStr = r.items.map(i => `<li class="list-disc ml-4 text-slate-300"><b>${i.quantity}x</b> ${i.name} ($${i.price.toLocaleString()})</li>`).join('');
+                let rTotal = r.items.reduce((sum, i) => sum + (i.price * i.quantity), 0);
+                
+                let badgeClass = r.status === 'Pendiente' ? 'bg-amber-900/40 text-alcatraz-glowing border-amber-800' : 'bg-emerald-950/40 text-emerald-400 border-emerald-800';
+                
+                rondasHtml += `
+                    <div class="p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs relative">
+                        <span class="absolute top-2.5 right-3 border text-[9px] font-bold px-2 py-0.5 rounded-full ${badgeClass}">${r.status}</span>
+                        <p class="font-bold text-slate-100">${r.id} <span class="text-[10px] text-slate-400 ml-1">Despachado: ${r.timestamp}</span></p>
+                        <ul class="my-2 space-y-0.5 text-[11px]">
+                            ${rItemsStr}
+                        </ul>
+                        <div class="flex justify-between items-center border-t border-slate-900 pt-1.5 mt-1 text-[11px]">
+                            <span class="text-slate-400">Total Ronda:</span>
+                            <span class="font-black text-slate-100">$${rTotal.toLocaleString()}</span>
+                        </div>
+                    </div>`;
+            });
+
+            container.innerHTML = rondasHtml;
+        }
+
+        // --- STREAMING_CHUNK:Controlando la barra despacho... ---
+        // --- MONITOR DE BARMAN: BAR KDS ---
+        function renderBarKDS() {
+            const container = document.getElementById('kitchen-orders-container');
+            container.innerHTML = '';
+            
+            const activeMesas = mesas.filter(m => m.rondas.length > 0 && m.rondas.some(r => r.status === 'Pendiente'));
+            
+            const badge = document.getElementById('kitchen-badge');
+            if(activeMesas.length > 0) {
+                badge.innerText = activeMesas.length;
+                badge.classList.remove('hidden');
+            } else {
+                badge.classList.add('hidden');
+            }
+
+            if(activeMesas.length === 0) {
+                container.innerHTML = `
+                    <div class="col-span-full text-center py-16 bg-slate-900 rounded-2xl border border-slate-800 p-8 flex flex-col items-center justify-center">
+                        <i class="fa-solid fa-clipboard-check text-emerald-500 text-5xl mb-3"></i>
+                        <h4 class="font-serif text-xl font-bold text-white mb-1">¡Barra Despejada!</h4>
+                        <p class="text-xs text-slate-400">No hay deudas líquidas en preparación.</p>
+                    </div>`;
+                return;
+            }
+
+            activeMesas.forEach(m => {
+                m.rondas.forEach(r => {
+                    if (r.status === 'Pendiente') {
+                        let itemsHtml = r.items.map(i => `
+                            <div class="flex justify-between items-center text-xs p-2 bg-slate-950 rounded-lg border border-slate-800">
+                                <span class="text-slate-200">🍺 <b>${i.quantity}x</b> ${i.name}</span>
+                            </div>
+                        `).join('');
+
+                        container.innerHTML += `
+                            <div class="bg-slate-900 rounded-2xl border border-slate-800 shadow-md overflow-hidden flex flex-col justify-between animate-fadeIn">
+                                <div class="p-4 bg-slate-950 text-white flex justify-between items-center border-b border-slate-800">
+                                    <div>
+                                        <h4 class="font-bold text-sm leading-tight text-alcatraz-glowing">${m.label}</h4>
+                                        <span class="text-[9px] uppercase font-bold tracking-wider text-slate-400 font-black">Atiende: ${m.waiter}</span>
+                                    </div>
+                                    <span class="bg-alcatraz-glowing text-alcatraz-carbon text-[9px] px-2.5 py-1 rounded font-black uppercase">BARRA</span>
+                                </div>
+                                <div class="p-4 space-y-2 flex-grow">
+                                    <p class="text-[10px] text-slate-400 font-bold mb-1">Registro: ${r.timestamp}</p>
+                                    ${itemsHtml}
+                                </div>
+                                <div class="p-4 border-t border-slate-800 bg-slate-950">
+                                    <button onclick="serveRound('${m.id}', '${r.id}')" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2.5 rounded-xl text-xs flex items-center justify-center gap-1.5 transition">
+                                        Servido y Despachado ✓
+                                    </button>
+                                </div>
+                            </div>`;
+                    }
+                });
+            });
+        }
+
+        function serveRound(mesaId, roundId) {
+            const m = mesas.find(x => x.id === mesaId);
+            const r = m.rondas.find(x => x.id === roundId);
+            if(r) {
+                r.status = 'Listo';
+                saveState();
+                playAlertSound();
+                alert(`¡Ronda despachada en ${m.label}!`);
+                renderBarKDS();
+                renderMesasSelector();
+                renderBillingTables();
+            }
+        }
+
+        // --- OPERATORIA: CAJA POS COMPACTO EN FORMATO LISTADO ---
+        function renderBillingTables() {
+            const container = document.getElementById('pos-billing-tables-grid');
+            container.innerHTML = '';
+            
+            const activeMesas = mesas.filter(m => m.rondas.length > 0);
+
+            if(activeMesas.length === 0) {
+                container.innerHTML = `<div class="col-span-full text-center py-6 text-slate-500 text-xs bg-slate-950/20 border border-slate-800/60 rounded-xl">No hay cuentas pendientes por cobrar.</div>`;
+                return;
+            }
+
+            activeMesas.forEach(m => {
+                let total = 0;
+                m.rondas.forEach(r => {
+                    r.items.forEach(i => total += (i.price * i.quantity));
+                });
+                
+                let selectedBorder = m.id === document.getElementById('pos-selected-table-id').value ? "ring-2 ring-alcatraz-glowing" : "";
+
+                container.innerHTML += `
+                    <button onclick="selectPOSMesa('${m.id}')" class="w-full p-3 rounded-xl border text-left bg-slate-950/60 border-slate-800/80 hover:bg-slate-900/60 flex items-center justify-between shadow-md relative transition ${selectedBorder} text-xs">
+                        <div class="flex items-center gap-2 truncate">
+                            <span class="w-2 h-2 rounded-full bg-alcatraz-glowing animate-pulse"></span>
+                            <span class="font-extrabold text-white uppercase truncate tracking-wider">${m.label}</span>
+                            <span class="text-[9px] text-slate-400">(${m.waiter || 'Barra'})</span>
+                        </div>
+                        <div class="flex items-center gap-2 shrink-0">
+                            <span class="text-[10px] bg-slate-900 px-2 py-0.5 rounded font-bold text-slate-400">${m.rondas.length} Rnd</span>
+                            <span class="text-xs font-black text-emerald-400">$${total.toLocaleString()}</span>
+                        </div>
+                    </button>`;
+            });
+        }
+
+        function selectPOSMesa(mesaId) {
+            const mObj = mesas.find(m => m.id === mesaId);
+            document.getElementById('pos-selected-table-id').value = mObj.id;
+            document.getElementById('pos-client-name').value = mObj.label;
+            document.getElementById('pos-waiter-indicator').innerHTML = `Asignación: <span class="text-alcatraz-glowing font-bold uppercase">${mObj.waiter || 'Barra'}</span>`;
+            
+            selectedPOSCart = [];
+            mObj.rondas.forEach(r => {
+                r.items.forEach(i => {
+                    let existing = selectedPOSCart.find(x => x.id === i.id);
+                    if(existing) {
+                        existing.quantity += i.quantity;
+                    } else {
+                        selectedPOSCart.push({
+                            id: i.id,
+                            name: i.name,
+                            price: i.price,
+                            quantity: i.quantity
+                        });
+                    }
+                });
+            });
+
+            updatePOSCartUI();
+            renderBillingTables();
+        }
+
+        function renderPOSProducts() {
+            const grid = document.getElementById('pos-grid'); grid.innerHTML = ''; const search = document.getElementById('pos-search').value.toLowerCase();
+            let filtered = products.filter(p => p.name.toLowerCase().includes(search) || p.category.toLowerCase().includes(search));
+            
+            filtered.forEach(p => {
+                grid.innerHTML += `<div onclick="addToPOS('${p.id}')" class="bg-slate-950 p-2.5 rounded-xl border border-slate-800 cursor-pointer hover:bg-slate-800 flex flex-col justify-between h-20 shadow-sm"><p class="font-bold text-[11px] text-slate-100 line-clamp-2 leading-tight">${p.name}</p><div class="flex justify-between items-end mt-1"><span class="text-[8px] bg-slate-800 text-slate-300 px-1 py-0.5 rounded">Menu</span><p class="font-black text-xs text-alcatraz-glowing">$${p.price.toLocaleString()}</p></div></div>`;
+            }); 
+            updatePOSCartUI();
+        }
+
+        function searchPOSProducts() { renderPOSProducts(); }
+        
+        function addToPOS(id) { 
+            const prod = products.find(p => p.id === id); 
+            let item = selectedPOSCart.find(i => i.id === id); 
+            if (item) item.quantity++; 
+            else selectedPOSCart.push({ id: prod.id, name: prod.name, price: prod.price, quantity: 1 }); 
+            updatePOSCartUI(); 
+        }
+
+        function updatePOSCartQty(idx, delta) { 
+            selectedPOSCart[idx].quantity += delta; 
+            if (selectedPOSCart[idx].quantity <= 0) selectedPOSCart.splice(idx, 1); 
+            updatePOSCartUI(); 
+        }
+
+        function updatePOSCartUI() {
+            const container = document.getElementById('pos-cart-items'); 
+            container.innerHTML = ''; 
+            let total = 0;
+            
+            if (selectedPOSCart.length === 0) {
+                container.innerHTML = `<p class="text-center text-xs text-slate-500 py-8">Selecciona una celda activa de la izquierda para liquidar sus consumos.</p>`;
+                document.getElementById('pos-total').innerText = "$0";
+                calculateSplitBill();
+                return;
+            }
+
+            selectedPOSCart.forEach((item, idx) => { 
+                total += item.price * item.quantity; 
+                container.innerHTML += `
+                    <div class="flex justify-between items-center p-2.5 bg-slate-950 rounded-xl border border-slate-800 text-xs animate-fadeIn">
+                        <span><b>${item.quantity}x</b> ${item.name}</span>
+                        <div class="flex items-center gap-2">
+                            <p class="font-black text-emerald-400">$${(item.price*item.quantity).toLocaleString()}</p>
+                            <button onclick="updatePOSCartQty(${idx}, -1)" class="text-rose-500 font-bold px-2 hover:bg-rose-950 py-0.5 rounded">X</button>
+                        </div>
+                    </div>`; 
+            });
+            document.getElementById('pos-total').innerText = `$${total.toLocaleString()}`;
+            calculateSplitBill();
+        }
+
+        function calculateSplitBill() {
+            let totalVal = 0;
+            if(selectedPOSCart.length > 0) {
+                totalVal = selectedPOSCart.reduce((s, i) => s + (i.price * i.quantity), 0);
+            }
+            let peopleCount = parseInt(document.getElementById('split-people').value) || 1;
+            if(peopleCount < 1) peopleCount = 1;
+
+            let splitVal = Math.ceil(totalVal / peopleCount);
+            document.getElementById('split-result').innerText = `$${splitVal.toLocaleString()}`;
+        }
+
+        function clearPOSCart() { 
+            selectedPOSCart = []; 
+            document.getElementById('pos-selected-table-id').value = '';
+            document.getElementById('pos-client-name').value = '';
+            document.getElementById('split-people').value = '1';
+            document.getElementById('pos-waiter-indicator').innerHTML = `Asignación: <span class="text-alcatraz-glowing font-bold">Ninguno</span>`;
+            updatePOSCartUI(); 
+            renderBillingTables();
+        }
+
+        function setPOSPayment(m) { 
+            posPayment = m; 
+            document.getElementById('pos-pay-cash').className = m === 'Efectivo' ? "py-2.5 rounded-xl font-bold text-[10px] bg-slate-950 text-white border-2 border-alcatraz-glowing" : "py-2.5 rounded-xl font-bold text-[10px] bg-slate-800 text-slate-300 border border-slate-700";
+            document.getElementById('pos-pay-transfer').className = m === 'Transferencia' ? "py-2.5 rounded-xl font-bold text-[10px] bg-slate-950 text-white border-2 border-alcatraz-glowing" : "py-2.5 rounded-xl font-bold text-[10px] bg-slate-800 text-slate-300 border border-slate-700";
+            document.getElementById('pos-pay-credit').className = "py-2.5 rounded-xl font-bold text-[10px] bg-cyan-950/40 text-cyan-400 border border-cyan-800";
+        }
+
+        // --- GESTIÓN DE CRÉDITOS ---
+        function openCreditModal() {
+            if(!selectedPOSCart.length) return alert("No hay consumos para fiar.");
+            const clientNameInput = document.getElementById('pos-client-name').value;
+            document.getElementById('credit-client-name').value = clientNameInput !== "Ninguno" ? clientNameInput : "";
+            
+            document.getElementById('credit-modal').classList.remove('hidden');
+        }
+
+        function closeCreditModal() {
+            document.getElementById('credit-modal').classList.add('hidden');
+        }
+
+        function confirmAndProcessCreditSale() {
+            const deudor = document.getElementById('credit-client-name').value.trim();
+            const dias = parseInt(document.getElementById('credit-days').value) || 15;
+            
+            if(!deudor) return alert("Ingresa el nombre del deudor.");
+            
+            let total = selectedPOSCart.reduce((s, i) => s + (i.price * i.quantity), 0);
+            let creditId = "CRE-"+Math.floor(1000+Math.random()*9000);
+            
+            let hoy = new Date();
+            let limite = new Date();
+            limite.setDate(hoy.getDate() + dias);
+
+            let newCredit = {
+                id: creditId,
+                date: hoy.toLocaleDateString(),
+                client: deudor,
+                amount: total,
+                days: dias,
+                status: 'Pendiente',
+                dueDate: limite.toLocaleDateString(),
+                remainingAmount: total
+            };
+
+            credits.push(newCredit);
+            sincronizarConGoogle("saveCredit", newCredit);
+
+            processFinalSaleWithParams(total, 'Crédito', deudor);
+            
+            closeCreditModal();
+        }
+
+        function saveManualCredit() {
+            const client = document.getElementById('credit-manual-name').value.trim();
+            const amount = parseInt(document.getElementById('credit-manual-amount').value);
+            const days = parseInt(document.getElementById('credit-manual-days').value) || 15;
+
+            if(!client || isNaN(amount)) return alert("Completa los campos.");
+
+            let creditId = "CRE-"+Math.floor(1000+Math.random()*9000);
+            let hoy = new Date();
+            let limite = new Date();
+            limite.setDate(hoy.getDate() + days);
+
+            let newCredit = {
+                id: creditId,
+                date: hoy.toLocaleDateString(),
+                client: client,
+                amount: amount,
+                days: days,
+                status: 'Pendiente',
+                dueDate: limite.toLocaleDateString(),
+                remainingAmount: amount
+            };
+
+            credits.push(newCredit);
+            sincronizarConGoogle("saveCredit", newCredit);
+            saveState();
+
+            document.getElementById('credit-manual-name').value = '';
+            document.getElementById('credit-manual-amount').value = '';
+            
+            renderCreditsTab();
+            renderFinances();
+            alert(`Crédito de $${amount.toLocaleString()} a ${client} registrado.`);
+        }
+
+        function processPOSSale() {
+            if(!selectedPOSCart.length) return alert("Cuenta de caja vacía.");
+            let total = selectedPOSCart.reduce((s, i) => s + (i.price * i.quantity), 0);
+            processFinalSaleWithParams(total, posPayment, null);
+        }
+
+        function processFinalSaleWithParams(total, paymentType, creditDebtorName) {
+            const activeTableId = document.getElementById('pos-selected-table-id').value;
+            const finalClientName = creditDebtorName || document.getElementById('pos-client-name').value || "Pabellón Común";
+            
+            let idVenta = "FAC-"+Math.floor(1000+Math.random()*9000);
+            
+            const tableObj = activeTableId ? mesas.find(m => m.id === activeTableId) : null;
+            const finalWaiter = tableObj ? (tableObj.waiter || "Caja") : "Caja";
+
+            let newOrder = { 
+                id: idVenta, 
+                date: new Date().toLocaleString(), 
+                clientName: finalClientName, 
+                payment: paymentType, 
+                items: [...selectedPOSCart], 
+                total: total, 
+                status: 'Pagado', 
+                type: 'Caja',
+                waiterName: finalWaiter 
+            };
+            
+            orders.push(newOrder); 
+            sincronizarConGoogle("saveOrder", newOrder);
+            
+            generateAndPrintThermalTicket(newOrder);
+
+            if (tableObj) {
+                tableObj.rondas = [];
+                tableObj.status = 'Libre';
+                tableObj.label = tableObj.id === "directa" ? "⚡ Venta Directa" : tableObj.name; 
+                tableObj.waiter = "";
+            }
+
+            saveState(); 
+            clearPOSCart(); 
+            renderBillingTables();
+            renderMesasSelector();
+            renderBarKDS();
+            renderHistory();
+            renderFinances();
+            renderCreditsTab();
+            
+            alert("Venta facturada.");
+        }
+
+        function renderCreditsTab() {
+            const tbody = document.getElementById('credits-rows');
+            tbody.innerHTML = '';
+            
+            if(credits.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" class="p-4 text-center text-slate-500">No hay deudas activas registradas.</td></tr>`;
+                return;
+            }
+
+            credits.forEach((c, idx) => {
+                let statusBadge = c.status === 'Pagado' ? 
+                    `<span class="bg-emerald-950 text-emerald-400 border border-emerald-800 px-2 py-0.5 rounded-full font-bold">Liquidado</span>` :
+                    `<span class="bg-amber-950 text-alcatraz-glowing border border-amber-800 px-2 py-0.5 rounded-full font-bold">Pendiente</span>`;
+
+                tbody.innerHTML += `
+                    <tr class="border-b border-slate-800 hover:bg-slate-900/40 text-xs">
+                        <td class="p-3"><b>${c.id}</b><br><span class="text-[9px] text-slate-500">${c.date}</span></td>
+                        <td class="p-3 font-bold text-slate-100">${c.client}<br><span class="text-[9px] text-slate-400">Vence: ${c.dueDate}</span></td>
+                        <td class="p-3 font-bold">${c.days} días</td>
+                        <td class="p-3 text-right text-slate-400">$${c.amount.toLocaleString()}</td>
+                        <td class="p-3 text-right font-black text-rose-400">$${c.remainingAmount.toLocaleString()}</td>
+                        <td class="p-3 text-center flex items-center justify-center gap-1.5">
+                            ${c.status !== 'Pagado' ? `
+                                <button onclick="openPaymentModal('${c.id}', ${c.remainingAmount})" class="bg-emerald-600 text-white font-bold px-2 py-1 rounded text-[10px] hover:bg-emerald-700">Abonar</button>
+                                <button onclick="liquidateFullCredit('${c.id}')" class="bg-slate-800 text-slate-300 border border-slate-700 font-bold px-2 py-1 rounded text-[10px] hover:bg-slate-700">Liquidar</button>
+                            ` : `<i class="fa-solid fa-circle-check text-emerald-500 text-lg"></i>`}
+                        </td>
+                    </tr>`;
+            });
+        }
+
+        function openPaymentModal(creditId, debt) {
+            document.getElementById('payment-credit-id').value = creditId;
+            document.getElementById('payment-modal-desc').innerHTML = `Saldo deudor actual: <b class="text-rose-400">$${debt.toLocaleString()}</b>`;
+            document.getElementById('payment-amount-input').value = debt;
+            
+            document.getElementById('payment-modal').classList.remove('hidden');
+        }
+
+        // --- GESTIÓN DE ABONOS ---
+        function closePaymentModal() {
+            document.getElementById('payment-modal').classList.add('hidden');
+        }
+
+        function processCreditPayment() {
+            const creditId = document.getElementById('payment-credit-id').value;
+            const value = parseInt(document.getElementById('payment-amount-input').value);
+
+            if(isNaN(value) || value <= 0) return alert("Monto no válido.");
+
+            const c = credits.find(x => x.id === creditId);
+            if(c) {
+                c.remainingAmount = Math.max(0, c.remainingAmount - value);
+                if(c.remainingAmount === 0) {
+                    c.status = 'Pagado';
+                }
+
+                let abonoRef = {
+                    id: "ABO-"+Math.floor(1000+Math.random()*9000),
+                    date: new Date().toLocaleString(),
+                    clientName: `Abono: ${c.client}`,
+                    payment: 'Efectivo',
+                    items: [{id: "ABONO", name: `Abono de Deuda ${c.id}`, price: value, quantity: 1}],
+                    total: value,
+                    status: 'Pagado',
+                    type: 'Caja',
+                    waiterName: 'Caja'
+                };
+                orders.push(abonoRef);
+                sincronizarConGoogle("saveOrder", abonoRef);
+
+                sincronizarConGoogle("syncAllCredits", credits);
+                saveState();
+                closePaymentModal();
+                renderCreditsTab();
+                renderFinances();
+                renderHistory();
+                alert("Abono procesado correctamente.");
+            }
+        }
+
+        function liquidateFullCredit(creditId) {
+            const c = credits.find(x => x.id === creditId);
+            if(c) {
+                openPaymentModal(c.id, c.remainingAmount);
+            }
+        }
+
+        // --- IMPRESIÓN DEL TICKET TÉRMICO DE ALCATRAZ ---
+        function generateAndPrintThermalTicket(order) {
+            const printArea = document.getElementById('print-receipt-area');
+            
+            let itemsRows = order.items.map(item => `
+                <tr style="border-bottom: 1px dashed #ddd;">
+                    <td style="padding: 4px 0; font-family: monospace; font-size: 11px;">${item.quantity}x ${item.name}</td>
+                    <td style="padding: 4px 0; text-align: right; font-family: monospace; font-size: 11px;">$${(item.price * item.quantity).toLocaleString()}</td>
+                </tr>
+            `).join('');
+
+            printArea.classList.remove('hidden');
+
+            printArea.innerHTML = `
+                <div style="width: 100%; max-width: 80mm; font-family: monospace; color: black; background: white; padding: 5px;">
+                    <div style="text-align: center; margin-bottom: 15px;">
+                        <h2 style="font-size: 16px; font-weight: bold; margin: 0; text-transform: uppercase;">EL PARCHE DE ALCATRAZ</h2>
+                        <p style="font-size: 10px; margin: 2px 0;">Pabellón Comercial de Licores</p>
+                        <p style="font-size: 10px; margin: 2px 0;">Inírida, Guainía - Colombia</p>
+                        <div style="border-bottom: 2px dashed black; margin: 10px 0;"></div>
+                        <h3 style="font-size: 12px; font-weight: bold; margin: 0;">DETALLE DE CONSUMO</h3>
+                        <p style="font-size: 11px; margin: 2px 0;">REF: #${order.id}</p>
+                    </div>
+
+                    <div style="font-size: 11px; margin-bottom: 10px; line-height: 1.4;">
+                        <p style="margin: 2px 0;"><strong>Fecha:</strong> ${order.date}</p>
+                        <p style="margin: 2px 0;"><strong>Atendido por:</strong> ${order.waiterName || 'Caja'}</p>
+                        <p style="margin: 2px 0;"><strong>Sección:</strong> ${order.clientName}</p>
+                        <p style="margin: 2px 0;"><strong>Forma de Pago:</strong> ${order.payment}</p>
+                    </div>
+
+                    <table style="width: 100%; border-collapse: collapse; margin-bottom: 15px;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid black;">
+                                <th style="text-align: left; font-size: 11px; padding-bottom: 5px;">Bebida / Cant</th>
+                                <th style="text-align: right; font-size: 11px; padding-bottom: 5px;">Subtotal</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${itemsRows}
+                        </tbody>
+                    </table>
+
+                    <div style="border-top: 1px dashed black; padding-top: 5px; margin-bottom: 20px;">
+                        <table style="width: 100%;">
+                            <tr>
+                                <td style="font-size: 13px; font-weight: bold;">TOTAL CUENTA:</td>
+                                <td style="font-size: 13px; font-weight: bold; text-align: right;">$${order.total.toLocaleString()}</td>
+                            </tr>
+                        </table>
+                    </div>
+
+                    <div style="text-align: center; font-size: 10px; margin-top: 20px; border-top: 1px solid #aaa; padding-top: 8px;">
+                        <p style="margin: 2px 0;">¡Sentencia cumplida! Vuelva pronto.</p>
+                        <p style="margin: 2px 0;">El Parche de Alcatraz Bar.</p>
+                    </div>
+                </div>
+            `;
+
+            document.body.classList.add('printing-mode');
+            setTimeout(() => { 
+                window.print(); 
+                document.body.classList.remove('printing-mode'); 
+                printArea.classList.add('hidden'); 
+            }, 300);
+        }
+
+        // --- STREAMING_CHUNK:Controlando el catálogo del bar... ---
+        // --- MANTENIMIENTOS Y CONFIGURACIONES ---
+        function saveInventoryProduct() {
+            const id = document.getElementById('inv-edit-id').value; 
+            const name = document.getElementById('inv-name').value; 
+            const cost = parseInt(document.getElementById('inv-cost').value); 
+            const price = parseInt(document.getElementById('inv-price').value); 
+            const stock = parseInt(document.getElementById('inv-stock').value);
+            let img = document.getElementById('inv-img-base64').value || "https://images.unsplash.com/photo-1608270586620-248524c67de9?q=80&w=300&auto=format&fit=crop";
+            let libras = document.getElementById('inv-libras').value; 
+            
+            if (!name || isNaN(cost) || isNaN(price) || isNaN(stock)) return alert("Faltan datos del producto.");
+            const prodData = { id: id ? id : "ALC-" + Math.floor(100 + Math.random() * 900), name, desc: document.getElementById('inv-desc').value, category: document.getElementById('inv-category').value, measure: document.getElementById('inv-measure').value, cost, price, stock, img, sales: 0, porcion: libras };
+            
+            if (id) { const idx = products.findIndex(p => p.id === id); products[idx] = prodData; } else { products.push(prodData); }
+            sincronizarConGoogle("syncProducts", products); 
+            saveState(); 
+            renderInventory(); 
+            renderMeseroProductCatalog();
+            alert("Catálogo actualizado.");
+        }
+
+        function handleInvImageUpload(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(event) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.createElement('canvas');
+                    const MAX_WIDTH = 300; 
+                    let scaleSize = MAX_WIDTH / img.width;
+                    canvas.width = MAX_WIDTH;
+                    canvas.height = img.height * scaleSize;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                    
+                    let base64Str = canvas.toDataURL('image/jpeg', 0.6); 
+                    document.getElementById('inv-img-base64').value = base64Str;
+                }
+                img.src = event.target.result;
+            }
+            reader.readAsDataURL(file);
+        }
+
+        function renderInventory() {
+            const tbody = document.getElementById('inventory-rows'); tbody.innerHTML = '';
+            products.forEach(p => {
+                let isCritical = p.stock <= 10;
+                let trClass = isCritical ? "bg-rose-950/20 text-rose-300 font-bold" : "";
+                tbody.innerHTML += `<tr class="hover:bg-slate-800/40 text-xs border-b border-slate-800 ${trClass}"><td class="p-3 font-bold">${p.name}</td><td class="p-3">${p.category}</td><td class="p-3 text-slate-400">$${p.cost.toLocaleString()}</td><td class="p-3 text-emerald-400 font-bold">$${p.price.toLocaleString()}</td><td class="p-3">${p.stock}</td><td class="p-3"><button onclick="deleteProduct('${p.id}')" class="text-rose-500">Eliminar</button></td></tr>`;
+            });
+        }
+        function deleteProduct(id) { products = products.filter(p => p.id !== id); sincronizarConGoogle("syncProducts", products); saveState(); renderInventory(); }
+
+        function renderPurchasesTab() {
+            const select = document.getElementById('purch-prod-select'); select.innerHTML = '<option value="">-- Seleccione Bebida --</option>';
+            products.forEach(p => { select.innerHTML += `<option value="${p.id}" data-cost="${p.cost}">${p.name}</option>`; });
+            const tbody = document.getElementById('purchases-rows'); tbody.innerHTML = '';
+            [...purchasesHistory].reverse().forEach(ph => { tbody.innerHTML += `<tr class="border-b border-slate-800"><td class="py-2">${ph.date}</td><td>${ph.supplier}</td><td class="text-right font-bold text-emerald-400">$${ph.total.toLocaleString()}</td></tr>`; });
+        }
+        function addProdToPurchase() {
+            const sel = document.getElementById('purch-prod-select'); const id = sel.value; const qty = parseInt(document.getElementById('purch-qty').value); const cost = parseInt(document.getElementById('purch-cost').value);
+            if(!id || isNaN(qty) || isNaN(cost)) return;
+            purchCart.push({ id, name: sel.options[sel.selectedIndex].text, qty, cost });
+            let list = document.getElementById('purch-cart-list'); list.innerHTML = ''; purchCart.forEach(i => list.innerHTML += `<div class="text-xs bg-slate-950 p-1.5 border border-slate-800 rounded mb-1 text-slate-300">${i.qty}x ${i.name} - $${(i.qty*i.cost).toLocaleString()}</div>`);
+        }
+        function processPurchase() {
+            if(!purchCart.length) return; 
+            let total = purchCart.reduce((s,i) => s + (i.qty*i.cost), 0);
+            
+            purchCart.forEach(item => {
+                const p = products.find(prod => prod.id === item.id);
+                if(p) p.stock += item.qty;
+            });
+
+            let newPurchase = { date: new Date().toLocaleDateString(), supplier: document.getElementById('purch-supplier').value || "Proveedor Genérico", items: [...purchCart], total };
+            purchasesHistory.push(newPurchase); sincronizarConGoogle("savePurchase", newPurchase); saveState(); purchCart = []; alert("Inventario reabastecido."); renderPurchasesTab(); renderInventory();
+        }
+
+        function saveExpense() {
+            const desc = document.getElementById('expense-desc').value; const val = parseInt(document.getElementById('expense-value').value);
+            if(!desc || isNaN(val)) return; let newExp = { date: new Date().toLocaleDateString(), desc, val }; expenses.push(newExp);
+            sincronizarConGoogle("saveExpense", newExp); saveState(); document.getElementById('expense-desc').value = ''; document.getElementById('expense-value').value = ''; renderExpenses();
+        }
+        function renderExpenses() {
+            const tbody = document.getElementById('expenses-rows'); tbody.innerHTML = '';
+            [...expenses].reverse().forEach(e => { tbody.innerHTML += `<tr class="border-b border-slate-800"><td class="py-2">${e.date}</td><td>${e.desc}</td><td class="text-right text-rose-400 font-bold">$${e.val.toLocaleString()}</td></tr>`; });
+        }
+
+        function renderHistory() {
+            const tbody = document.getElementById('history-rows'); tbody.innerHTML = '';
+            [...orders].reverse().forEach(o => { 
+                tbody.innerHTML += `
+                    <tr class="border-b border-slate-800 transition hover:bg-slate-900/40 text-xs">
+                        <td class="py-3 px-2 font-bold text-slate-200">${o.id}</td>
+                        <td class="py-3 px-2 text-xs text-slate-400">
+                            ${o.date.split(',')[0]}<br>
+                            <span class="text-[10px] font-bold bg-slate-800 text-slate-200 px-1.5 py-0.5 rounded">${o.clientName || ''}</span><br>
+                            <span class="text-[9px] text-slate-500 font-bold uppercase mt-1 inline-block">Mesero: ${o.waiterName||'Caja'}</span>
+                        </td>
+                        <td class="py-3 px-2 font-black text-emerald-400 text-right">$${o.total.toLocaleString()} (${o.payment})</td>
+                        <td class="py-3 px-2 text-center flex flex-col items-center gap-1.5">
+                            <button onclick="reprintReceipt('${o.id}')" class="bg-slate-800 text-white border border-slate-700 px-3 py-1.5 rounded-lg text-[10px] w-full hover:bg-slate-700 transition shadow-sm"><i class="fa-solid fa-print"></i> Re-imprimir</button>
+                            <button onclick="revertOrder('${o.id}')" class="bg-rose-950 text-rose-400 border border-rose-900 px-3 py-1.5 rounded-lg text-[10px] font-bold transition flex items-center justify-center gap-1 w-full"><i class="fa-solid fa-rotate-left"></i> Anular Venta</button>
+                        </td>
+                    </tr>`; 
+            });
+        }
+
+        // --- STREAMING_CHUNK:Controlando la contabilidad por periodos... ---
+        function reprintReceipt(id) {
+            let o = orders.find(x => x.id === id);
+            if(o) generateAndPrintThermalTicket(o);
+        }
+        
+        function revertOrder(id) {
+            if (prompt("Ingresa la Contraseña de Seguridad (6868) para autorizar la anulación:") !== "6868") {
+                return alert("Clave incorrecta.");
+            }
+            let oIdx = orders.findIndex(x => x.id === id);
+            if (oIdx > -1) { 
+                orders.splice(oIdx, 1); 
+                saveState(); 
+                renderHistory(); 
+                renderFinances();
+                alert(`Comprobante ${id} anulado contablemente.`); 
+            }
+        }
+
+        // --- CONCILIACIONES Y FINANZAS POR PERÍODO ---
+        function renderFinances() {
+            let rev = 0, cost = 0, exp = 0;
+            let waiterStats = {}; 
+            
+            const period = document.getElementById('export-period').value;
+            const ahora = new Date();
+            
+            const parsearFecha = (fechaStr) => {
+                if (!fechaStr) return new Date(NaN);
+                let d = new Date(fechaStr);
+                if (!isNaN(d.getTime())) return d;
+                
+                try {
+                    const partes = fechaStr.split(',');
+                    const fechaPartes = partes[0].trim().split('/');
+                    if (fechaPartes.length === 3) {
+                        const dia = parseInt(fechaPartes[0], 10);
+                        const mes = parseInt(fechaPartes[1], 10) - 1;
+                        const anio = parseInt(fechaPartes[2], 10);
+                        return new Date(anio, mes, dia);
+                    }
+                } catch(e) {}
+                return new Date(NaN);
+            };
+
+            let ordenesFiltradas = orders.filter(o => {
+                if (period === 'all') return true;
+                const fechaOrden = parsearFecha(o.date);
+                if (isNaN(fechaOrden.getTime())) return true;
+
+                const difDias = (ahora - fechaOrden) / (1000 * 60 * 60 * 24);
+
+                if (period === 'daily') {
+                    return fechaOrden.getDate() === ahora.getDate() &&
+                           fechaOrden.getMonth() === ahora.getMonth() &&
+                           fechaOrden.getFullYear() === ahora.getFullYear();
+                }
+                if (period === 'weekly') {
+                    return difDias <= 7;
+                }
+                if (period === 'monthly') {
+                    return fechaOrden.getMonth() === ahora.getMonth() &&
+                           fechaOrden.getFullYear() === ahora.getFullYear();
+                }
+                return true;
+            });
+
+            let gastosFiltradas = expenses.filter(e => {
+                if (period === 'all') return true;
+                const fechaGasto = parsearFecha(e.date);
+                if (isNaN(fechaGasto.getTime())) return true;
+                const difDias = (ahora - fechaGasto) / (1000 * 60 * 60 * 24);
+
+                if (period === 'daily') {
+                    return fechaGasto.getDate() === ahora.getDate() &&
+                           fechaGasto.getMonth() === ahora.getMonth() &&
+                           fechaGasto.getFullYear() === ahora.getFullYear();
+                }
+                if (period === 'weekly') {
+                    return difDias <= 7;
+                }
+                if (period === 'monthly') {
+                    return fechaGasto.getMonth() === ahora.getMonth() &&
+                           fechaGasto.getFullYear() === ahora.getFullYear();
+                }
+                return true;
+            });
+
+            ordenesFiltradas.forEach(o => { 
+                rev += o.total; 
+                
+                let waiterKey = o.waiterName || "Caja";
+                if(!waiterStats[waiterKey]) {
+                    waiterStats[waiterKey] = { count: 0, amount: 0 };
+                }
+                waiterStats[waiterKey].count++;
+                waiterStats[waiterKey].amount += o.total;
+
+                if (o.items && Array.isArray(o.items)) {
+                    o.items.forEach(i => { 
+                        let p = products.find(prod => prod.id === i.id); 
+                        if(p) cost += (p.cost * i.quantity); 
+                    }); 
+                }
+            });
+            
+            gastosFiltradas.forEach(e => exp += e.val);
+            
+            document.getElementById('metric-revenue').innerText = `$${rev.toLocaleString()}`; 
+            document.getElementById('metric-cost').innerText = `$${cost.toLocaleString()}`;
+            document.getElementById('metric-expenses').innerText = `$${exp.toLocaleString()}`; 
+            document.getElementById('metric-profit').innerText = `$${(rev - cost - exp).toLocaleString()}`;
+
+            const tableBody = document.getElementById('waiters-leaderboard-rows');
+            tableBody.innerHTML = '';
+            
+            let sortedWaiters = Object.keys(waiterStats).sort((a, b) => waiterStats[b].amount - waiterStats[a].amount);
+            
+            if (sortedWaiters.length === 0) {
+                tableBody.innerHTML = `<tr><td colspan="3" class="p-3 text-center text-slate-500 text-xs">Sin registros para meseros en este período.</td></tr>`;
+                return;
+            }
+
+            sortedWaiters.forEach(name => {
+                let stats = waiterStats[name];
+                tableBody.innerHTML += `
+                    <tr class="hover:bg-slate-800/40 border-b border-slate-800 transition-colors">
+                        <td class="p-3 font-extrabold text-slate-200 uppercase"><i class="fa-solid fa-user-tag text-alcatraz-glowing mr-1.5"></i>${name}</td>
+                        <td class="p-3 font-semibold text-slate-400">${stats.count} rondas</td>
+                        <td class="p-3 font-black text-right text-emerald-400">$${stats.amount.toLocaleString()}</td>
+                    </tr>`;
+            });
+        }
+
+        function downloadCierreExcel() {
+            let csv = "sep=\t\nFecha\tTipo\tConcepto\tIngreso\tGasto\tCostoInsumos\n";
+            let rev = 0, cost = 0, exp = 0;
+
+            orders.forEach(o => { 
+                rev += o.total;
+                let orderCost = 0;
+                o.items.forEach(i => { 
+                    let p = products.find(prod => prod.id === i.id); 
+                    if(p) orderCost += (p.cost * i.quantity); 
+                });
+                cost += orderCost;
+                csv += `${o.date}\tVenta POS\tPedido ${o.id}\t${o.total}\t0\t${orderCost}\n`; 
+            });
+
+            expenses.forEach(e => { 
+                exp += e.val;
+                csv += `${e.date}\tGasto\t${e.desc}\t0\t${e.val}\t0\n`; 
+            });
+
+            let utilidad = rev - cost - exp;
+
+            csv += `\n\t\tTOTAL RECAUDADO:\t${rev}\t\t\n`;
+            csv += `\t\tCOSTOS BEBIDAS:\t\t\t${cost}\n`;
+            csv += `\t\tGASTOS OPERATIVOS:\t\t${exp}\t\n`;
+            csv += `\t\tUTILIDAD NETA:\t${utilidad}\t\t\n`;
+
+            const bom = "\uFEFF"; 
+            const blob = new Blob([bom + csv], { type: 'text/csv;charset=utf-8;' }); 
+            const url = window.URL.createObjectURL(blob); 
+            const a = document.createElement('a'); 
+            a.setAttribute('href', url); 
+            a.setAttribute('download', `Cierre_Alcatraz.csv`); 
+            a.click();
+        }
+
+        function handleCategoryChange(e) {
+            if(e.target.value === 'NEW_CAT') {
+                let newCat = prompt("Nueva Categoría de Bar:");
+                if(newCat && newCat.trim() !== '') {
+                    categories.push(newCat.trim()); 
+                    saveState(); 
+                    renderAdminCategoryOptions(); 
+                    renderMeseroCategoryFilters();
+                    document.getElementById('inv-category').value = newCat.trim();
+                } else { 
+                    renderAdminCategoryOptions(); 
+                }
+            }
+        }
+
+        function renderAdminCategoryOptions() {
+            const select = document.getElementById('inv-category'); 
+            select.innerHTML = '';
+            categories.forEach(cat => { select.innerHTML += `<option value="${cat}">${cat}</option>`; });
+            select.innerHTML += `<option value="NEW_CAT" class="font-bold text-alcatraz-glowing bg-slate-950">+ Crear Categoría...</option>`;
+        }
+
+        // --- AUTENTICACIÓN ADMIN ---
+        function attemptLogin() { 
+            const user = document.getElementById('login-user').value.trim();
+            const pass = document.getElementById('login-pass').value.trim();
+
+            if (user === adminUser && pass === adminPass) {
+                switchView('admin'); 
+                document.getElementById('login-pass').value = '';
+                document.getElementById('login-error').classList.add('hidden');
+            } else {
+                document.getElementById('login-error').classList.remove('hidden');
+            }
+        }
+
+        function logoutAdmin() {
+            switchView('mesero');
+        }
+
+        // --- ENLACE DE EVENTOS INICIALES ---
+        function toggleRoleSelector() {
+            const selector = document.getElementById('role-selector-container');
+            if (selector.classList.contains('hidden')) {
+                selector.classList.remove('hidden');
+            } else {
+                selector.classList.add('hidden');
+            }
+        }
+
+        window.onload = () => { 
+            renderAdminCategoryOptions();
+            renderMeseroCategoryFilters();
+            renderMesasSelector();
+            renderMeseroProductCatalog(); 
+            updateAccessUI();
+            
+            // Iniciar por defecto en la vista pública Home
+            switchView('home');
+            loadDataFromCloud(); 
+        };
+    </script>
+</body>
+</html>
